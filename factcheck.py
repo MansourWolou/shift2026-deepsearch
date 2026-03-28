@@ -675,9 +675,14 @@ def _resolve_config(args: argparse.Namespace) -> dict:
     if not preset:
         raise ValueError(f"Mode inconnu : {mode}. Disponibles : {list(MODE_PRESETS.keys())}")
 
-    agents_str = args.agents or os.getenv("FACTCHECK_AGENTS")
-    if agents_str:
-        agents = [a.strip() for a in agents_str.split(",")]
+    # --agents CLI flag > mode preset > FACTCHECK_AGENTS env var > default preset
+    if args.agents:
+        agents = [a.strip() for a in args.agents.split(",")]
+    elif args.mode:
+        # Explicit --mode overrides env var
+        agents = list(preset["agents"])
+    elif os.getenv("FACTCHECK_AGENTS"):
+        agents = [a.strip() for a in os.getenv("FACTCHECK_AGENTS").split(",")]
     else:
         agents = list(preset["agents"])
 
