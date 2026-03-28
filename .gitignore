@@ -1,1 +1,6 @@
 .env
+.mcp.json
+report*.html
+__pycache__/
+*.pyc
+.venv/
