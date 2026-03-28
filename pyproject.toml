@@ -1,18 +1,47 @@
 [project]
 name = "shift2026"
 version = "0.1.0"
-description = "Add your description here"
+description = "Multi-agent fact-checking engine"
 requires-python = ">=3.12"
 dependencies = [
     "langchain-openai>=1.1.12",
     "python-dotenv>=1.0.0",
     "requests>=2.31.0",
     "rich>=13.0.0",
-    # deps pour les deepsearch_*.py standalone (optionnel)
-    "langchain-tavily>=0.2.17",
-    "langgraph>=1.1.3",
-    "langchain-anthropic>=0.3.0",
-    "langchain-google-genai>=2.0.0",
-    "langchain-mistralai>=1.1.2",
-    "langchain-xai>=1.2.2",
 ]
+
+[dependency-groups]
+dev = [
+    "black>=25.0",
+    "ruff>=0.11",
+    "pre-commit>=4.0",
+]
+
+# ── Black ──────────────────────────────────────────────
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+# ── Ruff (lint + isort) ────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",   # line length handled by black
+    "SIM108", # ternary — sometimes less readable
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["factcheck"]

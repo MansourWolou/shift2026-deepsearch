@@ -14,27 +14,25 @@ Usage:
     python factcheck.py --output result.json --verbose "..."
 """
 
+import argparse
+import json
+import logging
 import os
 import re
-import json
 import time
-import logging
-import argparse
-import requests
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime
+from pathlib import Path
 
+import requests
 from dotenv import load_dotenv
-from rich.console import Console
-from rich.panel import Panel
-from rich.live import Live
-from rich.table import Table
-from rich.logging import RichHandler
-
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage
+from rich.console import Console
+from rich.live import Live
+from rich.logging import RichHandler
+from rich.panel import Panel
+from rich.table import Table
 
 load_dotenv()
 console = Console()
@@ -49,6 +47,7 @@ LINKUP_API_KEY = os.getenv("LINKUP_API_KEY", "")
 # Utilitaires
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def normalize_query(raw: str) -> str:
     return " ".join(raw.strip().split())
 
@@ -59,7 +58,7 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-def extract_json(text: str) -> Optional[dict]:
+def extract_json(text: str) -> dict | None:
     for candidate in [
         text.strip(),
         *(m.group(1) for m in [re.search(r"```json\s*([\s\S]*?)\s*```", text, re.DOTALL)] if m),
@@ -78,6 +77,7 @@ def extract_json(text: str) -> Optional[dict]:
 # ──────────────────────────────────────────────────────────────────────────────
 # Linkup Search
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def linkup_search(query: str, depth: str = "deep") -> dict:
     """
@@ -138,11 +138,13 @@ def _invoke_agent(model: str, claim: str, search_results: dict) -> str:
     )
 
     messages = [
-        HumanMessage(content=ANALYSIS_PROMPT.format(
-            claim=claim,
-            search_answer=search_results.get("answer", "Aucune réponse"),
-            sources_text=sources_text or "Aucune source",
-        ))
+        HumanMessage(
+            content=ANALYSIS_PROMPT.format(
+                claim=claim,
+                search_answer=search_results.get("answer", "Aucune réponse"),
+                sources_text=sources_text or "Aucune source",
+            )
+        )
     ]
 
     response = llm.invoke(messages)
@@ -227,6 +229,7 @@ MODE_PRESETS = {
 # Recherche + analyse parallèle
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def run_research_parallel(
     claim: str,
     search_results: dict,
@@ -272,22 +275,24 @@ def run_research_parallel(
             table.add_row(AGENT_REGISTRY[name]["label"], status_map[name], dur_str)
         return table
 
-    with Live(_build_table(), console=console, refresh_per_second=2) as live:
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_run_one, name): name for name in agents}
-            for future in as_completed(futures):
-                name, raw, duration, error = future.result()
-                results[name] = {
-                    "label": AGENT_REGISTRY[name]["label"],
-                    "raw": raw,
-                    "duration_s": round(duration, 2),
-                    "error": error,
-                }
-                if error:
-                    status_map[name] = f"[red]erreur: {error[:40]}[/red]"
-                else:
-                    status_map[name] = "[green]terminé[/green]"
-                live.update(_build_table())
+    with (
+        Live(_build_table(), console=console, refresh_per_second=2) as live,
+        ThreadPoolExecutor(max_workers=max_workers) as pool,
+    ):
+        futures = {pool.submit(_run_one, name): name for name in agents}
+        for future in as_completed(futures):
+            name, raw, duration, error = future.result()
+            results[name] = {
+                "label": AGENT_REGISTRY[name]["label"],
+                "raw": raw,
+                "duration_s": round(duration, 2),
+                "error": error,
+            }
+            if error:
+                status_map[name] = f"[red]erreur: {error[:40]}[/red]"
+            else:
+                status_map[name] = "[green]terminé[/green]"
+            live.update(_build_table())
 
     return results
 
@@ -309,7 +314,10 @@ VERDICT_SCHEMA = {
     ],
     "consensus": ["Points all/most agents agree on"],
     "disagreements": [
-        {"topic": "What they disagree about", "positions": {"agent1": "position A", "agent2": "position B"}}
+        {
+            "topic": "What they disagree about",
+            "positions": {"agent1": "position A", "agent2": "position B"},
+        }
     ],
     "blind_spots": ["Topics or angles no agent covered"],
     "nuances": ["Important caveats or context"],
@@ -357,9 +365,7 @@ def synthesize_verdict(
         else:
             text = clean_text(data["raw"])[:4000]
             reports.append(
-                f"--- REPORT FROM {data['label']} ({name}) ---\n"
-                f"{text}\n"
-                f"--- END REPORT ---"
+                f"--- REPORT FROM {data['label']} ({name}) ---\n" f"{text}\n" f"--- END REPORT ---"
             )
 
     agent_reports = "\n\n".join(reports)
@@ -372,26 +378,33 @@ def synthesize_verdict(
     )
 
     messages = [
-        SystemMessage(content=SYNTHESIS_SYSTEM_PROMPT.format(
-            n_agents=n_agents,
-            output_schema=json.dumps(VERDICT_SCHEMA, indent=2),
-        )),
-        HumanMessage(content=SYNTHESIS_USER_PROMPT.format(
-            query=query,
-            agent_reports=agent_reports,
-            n_agents=n_agents,
-        )),
+        SystemMessage(
+            content=SYNTHESIS_SYSTEM_PROMPT.format(
+                n_agents=n_agents,
+                output_schema=json.dumps(VERDICT_SCHEMA, indent=2),
+            )
+        ),
+        HumanMessage(
+            content=SYNTHESIS_USER_PROMPT.format(
+                query=query,
+                agent_reports=agent_reports,
+                n_agents=n_agents,
+            )
+        ),
     ]
 
-    console.print("\n[bold magenta]Synthèse en cours…[/bold magenta] "
-                  f"({model})\n")
+    console.print("\n[bold magenta]Synthèse en cours…[/bold magenta] " f"({model})\n")
 
     response = llm.invoke(messages)
     content = response.content
 
     if isinstance(content, list):
         content = next(
-            (block["text"] for block in content if isinstance(block, dict) and block.get("type") == "text"),
+            (
+                block["text"]
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ),
             str(content),
         )
 
@@ -412,6 +425,7 @@ def synthesize_verdict(
 # Fonction principale
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def factcheck(
     query: str,
     agents: list[str] | None = None,
@@ -428,12 +442,14 @@ def factcheck(
         if name not in AGENT_REGISTRY:
             raise ValueError(f"Agent inconnu : {name}. Disponibles : {list(AGENT_REGISTRY.keys())}")
 
-    console.print(Panel(
-        f"[bold]Fact-Check Engine[/bold]\n"
-        f"[white]{query}[/white]\n"
-        f"[dim]Agents : {', '.join(agents)} | Synthèse : {synthesis_model}[/dim]",
-        border_style="cyan",
-    ))
+    console.print(
+        Panel(
+            f"[bold]Fact-Check Engine[/bold]\n"
+            f"[white]{query}[/white]\n"
+            f"[dim]Agents : {', '.join(agents)} | Synthèse : {synthesis_model}[/dim]",
+            border_style="cyan",
+        )
+    )
 
     t_total = time.perf_counter()
 
@@ -463,7 +479,7 @@ def factcheck(
 
     output = {
         "query": query,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "config": {
             "research_agents": agents,
             "synthesis_model": synthesis_model,
@@ -507,13 +523,15 @@ def display_verdict(output: dict) -> None:
     color = VERDICT_COLORS.get(verdict_text, "white")
     confidence = v.get("confidence", 0)
 
-    console.print(Panel(
-        f"[bold {color}]{verdict_text}[/bold {color}]  "
-        f"(confiance : {confidence:.0%})\n\n"
-        f"{v.get('summary', '')}",
-        title="[bold]Verdict[/bold]",
-        border_style=color,
-    ))
+    console.print(
+        Panel(
+            f"[bold {color}]{verdict_text}[/bold {color}]  "
+            f"(confiance : {confidence:.0%})\n\n"
+            f"{v.get('summary', '')}",
+            title="[bold]Verdict[/bold]",
+            border_style=color,
+        )
+    )
 
     if v.get("evidence_for"):
         console.print("\n[green]Evidence FOR:[/green]")
@@ -531,10 +549,12 @@ def display_verdict(output: dict) -> None:
             console.print(f"  • {n}")
 
     t = output["timing"]
-    console.print(f"\n[dim]Total: {t['total_s']:.1f}s | "
-                  f"Search: {t['search_s']:.1f}s | "
-                  f"Analyse: {t['analysis_s']:.1f}s | "
-                  f"Synthèse: {t['synthesis_s']:.1f}s[/dim]")
+    console.print(
+        f"\n[dim]Total: {t['total_s']:.1f}s | "
+        f"Search: {t['search_s']:.1f}s | "
+        f"Analyse: {t['analysis_s']:.1f}s | "
+        f"Synthèse: {t['synthesis_s']:.1f}s[/dim]"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -617,7 +637,11 @@ def generate_html_report(output: dict, path: str) -> str:
 
     verdict_text = v.get("verdict", "UNKNOWN")
     verdict_class = verdict_text.split()[0]  # "PARTIALLY TRUE" → "PARTIALLY"
-    confidence = round(v.get("confidence", 0) * 100) if v.get("confidence", 0) <= 1 else round(v.get("confidence", 0))
+    confidence = (
+        round(v.get("confidence", 0) * 100)
+        if v.get("confidence", 0) <= 1
+        else round(v.get("confidence", 0))
+    )
 
     # Agent bars — scaled relative to slowest
     per_agent = t.get("per_agent", {})
@@ -630,14 +654,16 @@ def generate_html_report(output: dict, path: str) -> str:
             f'<div class="agent-row">'
             f'<span class="agent-name">{label}</span>'
             f'<span class="agent-time">{dur:.1f}s</span>'
-            f'</div>'
+            f"</div>"
             f'<div class="agent-bar" style="width:{pct:.0f}%"></div>'
         )
 
     def _list_section(title: str, items: list, color: str) -> str:
         if not items:
             return ""
-        lis = "".join(f"<li>{_esc(i.get('point', i) if isinstance(i, dict) else i)}</li>" for i in items)
+        lis = "".join(
+            f"<li>{_esc(i.get('point', i) if isinstance(i, dict) else i)}</li>" for i in items
+        )
         return f'<div class="section"><h2 style="color:{color}">{title}</h2><ul>{lis}</ul></div>'
 
     def _esc(s: str) -> str:
@@ -650,7 +676,9 @@ def generate_html_report(output: dict, path: str) -> str:
         confidence=confidence,
         summary=_esc(v.get("summary", "")),
         evidence_for_html=_list_section("Evidence FOR", v.get("evidence_for", []), "var(--green)"),
-        evidence_against_html=_list_section("Evidence AGAINST", v.get("evidence_against", []), "var(--red)"),
+        evidence_against_html=_list_section(
+            "Evidence AGAINST", v.get("evidence_against", []), "var(--red)"
+        ),
         nuances_html=_list_section("Nuances", v.get("nuances", []), "var(--yellow)"),
         agents_html="\n".join(agents_rows),
         total_s=f"{t['total_s']:.1f}",
@@ -667,6 +695,7 @@ def generate_html_report(output: dict, path: str) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def _resolve_config(args: argparse.Namespace) -> dict:
     # Mode preset (can be overridden by explicit --agents)
@@ -686,7 +715,9 @@ def _resolve_config(args: argparse.Namespace) -> dict:
     else:
         agents = list(preset["agents"])
 
-    model = args.synthesis_model or os.getenv("FACTCHECK_SYNTHESIS_MODEL", "google/gemini-2.5-flash")
+    model = args.synthesis_model or os.getenv(
+        "FACTCHECK_SYNTHESIS_MODEL", "google/gemini-2.5-flash"
+    )
     max_workers = preset["max_workers"]
     search_depth = preset["search_depth"]
 
@@ -717,27 +748,47 @@ def main():
     parser.add_argument("claim", nargs="*", help="Claim or query to fact-check")
     parser.add_argument("--mode", choices=MODE_PRESETS.keys(), help=f"Preset mode ({modes_help})")
     parser.add_argument("--agents", help="Comma-separated agent list (overrides mode preset)")
-    parser.add_argument("--synthesis-model", help="Model for synthesis (default: google/gemini-2.5-flash)")
+    parser.add_argument(
+        "--synthesis-model", help="Model for synthesis (default: google/gemini-2.5-flash)"
+    )
     parser.add_argument("--output", help="Save JSON output to file")
-    parser.add_argument("--html", nargs="?", const="report.html", help="Generate HTML report (dev/demo). Optional path, default: report.html")
-    parser.add_argument("--verbose", action="store_true", help="Include raw search & analysis in output")
+    parser.add_argument(
+        "--html",
+        nargs="?",
+        const="report.html",
+        help="Generate HTML report (dev/demo). Optional path, default: report.html",
+    )
+    parser.add_argument(
+        "--verbose", action="store_true", help="Include raw search & analysis in output"
+    )
     parser.add_argument("--no-pretty", action="store_true", help="Compact JSON output")
-    parser.add_argument("--log-level", default="warning", choices=["debug", "info", "warning", "error"],
-                        help="Log level — use 'debug' or 'info' for parallelism details")
+    parser.add_argument(
+        "--log-level",
+        default="warning",
+        choices=["debug", "info", "warning", "error"],
+        help="Log level — use 'debug' or 'info' for parallelism details",
+    )
 
     args = parser.parse_args()
 
     _setup_logging(args.log_level)
 
-    query = " ".join(args.claim).strip() if args.claim else input("Entrez l'info à vérifier : ").strip()
+    query = (
+        " ".join(args.claim).strip() if args.claim else input("Entrez l'info à vérifier : ").strip()
+    )
     if not query:
         console.print("[red]Aucune requête fournie.[/red]")
         return
 
     config = _resolve_config(args)
 
-    log.info("Mode: %s | Agents: %s | Workers: %s | Search: %s",
-             config["mode"], config["agents"], config["max_workers"] or "auto", config["search_depth"])
+    log.info(
+        "Mode: %s | Agents: %s | Workers: %s | Search: %s",
+        config["mode"],
+        config["agents"],
+        config["max_workers"] or "auto",
+        config["search_depth"],
+    )
 
     output = factcheck(
         query=query,
