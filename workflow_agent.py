@@ -90,6 +90,30 @@ MODEL_MISTRAL_NEMO  = os.getenv("MISTRAL_NEMO_MODEL",  "mistralai/mistral-nemo")
 # Claude direct via Anthropic API (synthétiseur)
 MODEL_CLAUDE   = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Tarifs estimatifs (USD / 1M tokens)
+# ──────────────────────────────────────────────────────────────────────────────
+
+COST_LLM: dict[str, dict] = {
+    MODEL_LLAMA_8B:    {"input": 0.055, "output": 0.055},
+    MODEL_QWEN_7B:     {"input": 0.07,  "output": 0.07},
+    MODEL_MISTRAL_NEMO:{"input": 0.13,  "output": 0.13},
+    MODEL_CLAUDE:      {"input": 3.00,  "output": 15.00},
+}
+COST_SEARCH: dict[str, float] = {
+    "tavily": 0.01,   # USD par appel
+    "linkup": 0.005,  # USD par appel
+}
+
+
+def estimate_llm_cost(model: str, input_tok: int, output_tok: int) -> float:
+    rates = COST_LLM.get(model, {"input": 0.10, "output": 0.10})
+    return round((input_tok * rates["input"] + output_tok * rates["output"]) / 1_000_000, 8)
+
+
+def estimate_search_cost(tool: str, calls: int) -> float:
+    return round(COST_SEARCH.get(tool, 0.0) * calls, 8)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Définition des agents
@@ -166,11 +190,13 @@ class TimingCallback(BaseCallbackHandler):
 
     def __init__(self) -> None:
         super().__init__()
-        self._lock       = threading.Lock()
-        self.thinking_s  = 0.0
-        self.search_s    = 0.0
-        self.llm_calls   = 0
-        self.tool_calls  = 0
+        self._lock        = threading.Lock()
+        self.thinking_s   = 0.0
+        self.search_s     = 0.0
+        self.llm_calls    = 0
+        self.tool_calls   = 0
+        self.input_tokens  = 0
+        self.output_tokens = 0
         # stacks de timestamps (plusieurs appels peuvent se chevaucher dans un agent)
         self._llm_starts:  dict[str, float] = {}
         self._tool_starts: dict[str, float] = {}
@@ -212,6 +238,13 @@ class TimingCallback(BaseCallbackHandler):
             if t0 is not None:
                 self.thinking_s += time.perf_counter() - t0
                 self.llm_calls  += 1
+            # Collecte les tokens via usage_metadata
+            for gen_list in response.generations:
+                for gen in gen_list:
+                    usage = getattr(getattr(gen, "message", None), "usage_metadata", None)
+                    if usage:
+                        self.input_tokens  += usage.get("input_tokens",  0)
+                        self.output_tokens += usage.get("output_tokens", 0)
 
     def on_llm_error(
         self,
@@ -268,16 +301,25 @@ class TimingCallback(BaseCallbackHandler):
                 self.search_s  += time.perf_counter() - t0
                 self.tool_calls += 1
 
-    def snapshot(self, total_s: float) -> dict:
-        """Retourne un snapshot des métriques de timing."""
+    def snapshot(self, total_s: float, model: str = "", search_tool: str = "") -> dict:
+        """Retourne un snapshot des métriques de timing et de coût."""
         with self._lock:
+            llm_cost    = estimate_llm_cost(model, self.input_tokens, self.output_tokens)
+            search_cost = estimate_search_cost(search_tool, self.tool_calls)
             return {
-                "total_s":    round(total_s, 3),
-                "thinking_s": round(self.thinking_s, 3),
-                "search_s":   round(self.search_s, 3),
-                "other_s":    round(max(0.0, total_s - self.thinking_s - self.search_s), 3),
-                "llm_calls":  self.llm_calls,
-                "tool_calls": self.tool_calls,
+                "total_s":       round(total_s, 3),
+                "thinking_s":    round(self.thinking_s, 3),
+                "search_s":      round(self.search_s, 3),
+                "other_s":       round(max(0.0, total_s - self.thinking_s - self.search_s), 3),
+                "llm_calls":     self.llm_calls,
+                "tool_calls":    self.tool_calls,
+                "input_tokens":  self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "cost": {
+                    "llm_usd":    llm_cost,
+                    "search_usd": search_cost,
+                    "total_usd":  round(llm_cost + search_cost, 8),
+                },
             }
 
 
@@ -450,26 +492,21 @@ _AGENT_SYSTEM = """{backstory}
 
 DIRECTIVE : {directive}
 
-Tu disposes d'un outil de recherche web. Effectue 2 à 4 recherches ciblées
+Tu disposes d'un outil de recherche web. Effectue 2 à 4 recherches ciblées \
 pour collecter des informations récentes et fiables avant de répondre.
 
-Réponds UNIQUEMENT avec un objet JSON valide :
-{{
-  "executive_summary": "Résumé dense en 2-3 phrases basé sur les recherches.",
-  "key_points":    ["Point factuel 1", "Point 2", "Point 3"],
-  "assumptions":   ["Hypothèse ou limite des sources"],
-  "uncertainties": ["Zone d'incertitude ou contradiction entre sources"],
-  "sources":       ["URL ou titre de source réelle trouvée"]
-}}
-Aucun texte avant ou après le JSON."""
+Rédige ta réponse en texte structuré avec exactement ces sections :
 
-_SYNTHESIS_SYSTEM = """Tu es un méta-analyste senior expert en synthèse comparative multi-sources.
-Tu reçois les outputs de plusieurs agents de recherche aux approches différentes (factuelle, \
-exploratoire, systémique, synthétique, adversariale).
-Tu identifies consensus, divergences, angles morts et produis une méta-analyse à forte valeur ajoutée.
-Tu ne résumes pas : tu analyses, recroises et enrichis avec un regard critique et structuré."""
+**RÉSUMÉ** : 2 à 3 phrases denses résumant l'essentiel.
+**POINTS CLÉS** : liste à puces des faits importants (3 à 5 points).
+**INCERTITUDES** : zones d'ombre ou contradictions entre sources.
+**SOURCES** : liste des URLs ou titres de sources consultées."""
 
-_SYNTHESIS_HUMAN = """Méta-analyse comparative de {n} outputs de recherche sur la même requête.
+_SYNTHESIS_SYSTEM = """Tu es un méta-analyste senior. Tu reçois les outputs de plusieurs agents \
+de recherche et tu produis une analyse comparative approfondie en texte structuré.
+Tu ne résumes pas : tu analyses, croises les sources et révèles ce qu'aucun agent seul ne peut voir."""
+
+_SYNTHESIS_HUMAN = """Méta-analyse de {n} agents de recherche sur la même requête.
 
 ═══════════════════════════════════════════════
 REQUÊTE : {query}
@@ -478,52 +515,38 @@ REQUÊTE : {query}
 {context}
 
 ═══════════════════════════════════════════════
-INSTRUCTIONS D'ANALYSE
+INSTRUCTIONS
 ═══════════════════════════════════════════════
 
-1. CONSENSUS — Points convergents validés par ≥2 agents (avec haute confiance).
-2. CONTRADICTIONS — Désaccords explicites entre agents : cite les agents et l'origine du désaccord.
-3. INSIGHTS UNIQUES — Contributions propres à chaque agent, non couvertes par les autres.
-4. ANGLES MORTS — Dimensions importantes non traitées par aucun agent.
-5. QUALITÉ DES SOURCES — Évalue la fiabilité, fraîcheur et diversité des sources de chaque agent.
-6. RÉSULTATS CLÉS — Les 3-5 conclusions factuelles les plus importantes et les mieux étayées.
-7. COMPARAISON MÉTHODOLOGIQUE — En quoi les approches divergent et comment elles se complètent.
-8. NIVEAU DE CONFIANCE GLOBAL — Score 0-100 avec justification (basé sur convergence + qualité sources).
-9. RECHERCHES RECOMMANDÉES — 2-3 axes de recherche complémentaires pour approfondir le sujet.
-10. SYNTHÈSE FINALE — Paragraphe de 5-8 phrases dense, exploitant la complémentarité des approches, \
-avec nuances et limites épistémiques.
+Produis une analyse structurée. Utilise exactement ces sections dans cet ordre, \
+chaque titre préfixé par "## " :
 
-Réponds UNIQUEMENT avec un objet JSON valide :
-{{
-  "consensus":     ["Point validé par plusieurs agents avec source"],
-  "contradictions": ["Agent A affirme X ; Agent B affirme Y — origine probable : ..."],
-  "disagreements": ["Désaccord + agents concernés + origine (rétro-compat)"],
-  "unique_insights": {{ {unique_keys} }},
-  "blind_spots":   ["Dimension non traitée"],
-  "key_findings": [
-    {{"finding": "Conclusion factuelle 1", "confidence": "high|medium|low", "supported_by": ["agent_key1"]}},
-    {{"finding": "Conclusion factuelle 2", "confidence": "high|medium|low", "supported_by": ["agent_key2"]}}
-  ],
-  "methodology_comparison": {{
-    "strengths": {{ {mcomp_keys} }},
-    "weaknesses": {{ {mcomp_keys2} }},
-    "complementarity": "Comment les approches se complètent mutuellement."
-  }},
-  "source_quality_assessment": {{ {qa_keys} }},
-  "quality_assessment": {{ {qa_keys2} }},
-  "confidence_level": {{
-    "score": 75,
-    "label": "medium|high|low",
-    "rationale": "Justification du niveau de confiance global."
-  }},
-  "recommended_further_research": [
-    {{"topic": "Axe de recherche 1", "rationale": "Pourquoi explorer cet axe"}},
-    {{"topic": "Axe de recherche 2", "rationale": "Pourquoi explorer cet axe"}}
-  ],
-  "quality_ranking": {ranking_placeholder},
-  "final_synthesis": "Synthèse finale dense (5-8 phrases) avec nuances et limites épistémiques."
-}}
-Aucun texte avant ou après le JSON."""
+## RÉSULTATS CLÉS
+3 à 5 conclusions factuelles solides, étayées par plusieurs agents. Une par ligne, préfixée par "- ".
+
+## CONSENSUS
+Points convergents validés par au moins 2 agents. Une par ligne, préfixée par "- ".
+
+## CONTRADICTIONS
+Désaccords entre agents. Format : "Agent X affirme … ; Agent Y affirme …". Une par ligne.
+
+## COMPARAISON DES RAISONNEMENTS
+Pour chaque agent, évalue en 1-2 phrases : qualité du raisonnement, originalité, pertinence des sources, \
+contribution unique. Format strict :
+**[Label exact de l'agent]** : évaluation.
+
+## ANGLES MORTS
+Dimensions importantes non couvertes par aucun agent. Une par ligne, préfixée par "- ".
+
+## NIVEAU DE CONFIANCE
+Score global : X/100. Justification courte (2-3 phrases) basée sur convergence et qualité des sources.
+
+## RECHERCHES RECOMMANDÉES
+2 à 3 axes complémentaires. Format : "- Sujet : raison".
+
+## SYNTHÈSE FINALE
+Paragraphe de 5 à 8 phrases dense, exploitant la complémentarité des approches, avec nuances \
+et limites épistémiques."""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -575,107 +598,69 @@ def extract_json(text: str) -> Optional[dict]:
 
 
 def parse_research(raw: str) -> dict:
-    p = extract_json(raw)
-    if p:
-        return {
-            "executive_summary": str(p.get("executive_summary", "")),
-            "key_points":    list(p.get("key_points",    [])),
-            "assumptions":   list(p.get("assumptions",   [])),
-            "uncertainties": list(p.get("uncertainties", [])),
-            "sources":       list(p.get("sources",       [])),
-        }
+    """Extrait les sections **TITRE** : contenu du texte libre de l'agent."""
+    sections: dict[str, str] = {}
+    current: Optional[str] = None
+    buf: list[str] = []
+
+    for line in raw.split("\n"):
+        m = re.match(r"^\*\*([^*]+)\*\*\s*:?\s*(.*)", line)
+        if m:
+            if current is not None:
+                sections[current] = "\n".join(buf).strip()
+            current = m.group(1).strip().upper()
+            buf = [m.group(2).strip()] if m.group(2).strip() else []
+        else:
+            if current is not None:
+                buf.append(line)
+
+    if current is not None:
+        sections[current] = "\n".join(buf).strip()
+
+    def bullets(text: str) -> list[str]:
+        return [l.lstrip("-•* ").strip() for l in text.split("\n") if l.strip().lstrip("-•* ").strip()]
+
     return {
-        "executive_summary": raw[:500] if raw else "Parsing échoué.",
-        "key_points": [], "assumptions": [],
-        "uncertainties": ["Réponse non parseable."],
-        "sources": [],
+        "executive_summary": sections.get("RÉSUMÉ", raw[:400] if raw else "—"),
+        "key_points":        bullets(sections.get("POINTS CLÉS", "")),
+        "uncertainties":     bullets(sections.get("INCERTITUDES", "")),
+        "sources":           bullets(sections.get("SOURCES", "")),
     }
 
 
-def parse_synthesis(raw: str, agent_keys: list[str]) -> dict:
-    p = extract_json(raw)
-    if p:
-        ui   = p.get("unique_insights", {})
-        qa   = p.get("quality_assessment", {})
-        sqa  = p.get("source_quality_assessment", {})
-        mc   = p.get("methodology_comparison", {})
-        cl   = p.get("confidence_level", {})
-        kf   = p.get("key_findings", [])
-        rfr  = p.get("recommended_further_research", [])
+def parse_synthesis_markdown(raw: str) -> dict:
+    """
+    Extrait les sections Markdown (## TITRE) de la réponse de synthèse.
+    Retourne un dict {section_name: contenu} + confidence_score.
+    """
+    sections: dict[str, str] = {}
+    current: Optional[str] = None
+    buf: list[str] = []
 
-        # Normalise key_findings (liste de dicts ou de strings)
-        key_findings = []
-        for item in kf:
-            if isinstance(item, dict):
-                key_findings.append({
-                    "finding":      str(item.get("finding", "")),
-                    "confidence":   str(item.get("confidence", "medium")),
-                    "supported_by": list(item.get("supported_by", [])),
-                })
-            elif isinstance(item, str):
-                key_findings.append({"finding": item, "confidence": "medium", "supported_by": []})
-
-        # Normalise recommended_further_research
-        recommendations = []
-        for item in rfr:
-            if isinstance(item, dict):
-                recommendations.append({
-                    "topic":     str(item.get("topic", "")),
-                    "rationale": str(item.get("rationale", "")),
-                })
-            elif isinstance(item, str):
-                recommendations.append({"topic": item, "rationale": ""})
-
-        # Normalise methodology_comparison
-        mc_strengths  = mc.get("strengths", {})
-        mc_weaknesses = mc.get("weaknesses", {})
-        methodology_comparison = {
-            "strengths":       {k: str(mc_strengths.get(k, ""))  for k in agent_keys},
-            "weaknesses":      {k: str(mc_weaknesses.get(k, "")) for k in agent_keys},
-            "complementarity": str(mc.get("complementarity", "")),
-        }
-
-        # Normalise confidence_level
-        if isinstance(cl, dict):
-            confidence_level = {
-                "score":    int(cl.get("score", 50)) if str(cl.get("score", "50")).isdigit() else 50,
-                "label":    str(cl.get("label", "medium")),
-                "rationale": str(cl.get("rationale", "")),
-            }
+    for line in raw.split("\n"):
+        if line.startswith("## "):
+            if current is not None:
+                sections[current] = "\n".join(buf).strip()
+            current = line[3:].strip().upper()
+            buf = []
         else:
-            confidence_level = {"score": 50, "label": "medium", "rationale": str(cl)}
+            if current is not None:
+                buf.append(line)
 
-        return {
-            "consensus":              list(p.get("consensus",     [])),
-            "contradictions":         list(p.get("contradictions", p.get("disagreements", []))),
-            "disagreements":          list(p.get("disagreements", [])),
-            "unique_insights":        {k: list(ui.get(k, [])) for k in agent_keys},
-            "blind_spots":            list(p.get("blind_spots", [])),
-            "key_findings":           key_findings,
-            "methodology_comparison": methodology_comparison,
-            "source_quality_assessment": {k: str(sqa.get(k, qa.get(k, ""))) for k in agent_keys},
-            "quality_assessment":     {k: str(qa.get(k, "")) for k in agent_keys},
-            "confidence_level":       confidence_level,
-            "recommended_further_research": recommendations,
-            "quality_ranking":        list(p.get("quality_ranking", agent_keys)),
-            "final_synthesis":        str(p.get("final_synthesis", "")),
-        }
+    if current is not None:
+        sections[current] = "\n".join(buf).strip()
+
+    # Extrait le score de confiance depuis la section dédiée
+    conf_text = sections.get("NIVEAU DE CONFIANCE", "")
+    score = 50
+    m = re.search(r"(\d{1,3})\s*/\s*100", conf_text)
+    if m:
+        score = max(0, min(100, int(m.group(1))))
+
     return {
-        "consensus": [], "contradictions": [], "disagreements": [],
-        "unique_insights":              {k: [] for k in agent_keys},
-        "blind_spots":                  [],
-        "key_findings":                 [],
-        "methodology_comparison":       {
-            "strengths": {k: "" for k in agent_keys},
-            "weaknesses": {k: "" for k in agent_keys},
-            "complementarity": "",
-        },
-        "source_quality_assessment":    {k: "" for k in agent_keys},
-        "quality_assessment":           {k: "" for k in agent_keys},
-        "confidence_level":             {"score": 0, "label": "low", "rationale": "Parsing échoué."},
-        "recommended_further_research": [],
-        "quality_ranking":              agent_keys,
-        "final_synthesis":              raw[:2000] if raw else "Parsing échoué.",
+        "raw":              raw,
+        "sections":         sections,
+        "confidence_score": score,
     }
 
 
@@ -727,12 +712,14 @@ def research_agent(state: AgentNodeState) -> dict:
         status = "✗"
 
     total_s = time.perf_counter() - t0
-    timing  = callback.snapshot(total_s)
+    timing  = callback.snapshot(total_s, cfg["model"], cfg["search_tool"])
 
+    cost_usd = timing["cost"]["total_usd"]
     print(
         f"  {status} [{cfg['label']}] {total_s:.2f}s total"
-        f" | thinking {timing['thinking_s']:.2f}s ({timing['llm_calls']} LLM calls)"
-        f" | search {timing['search_s']:.2f}s ({timing['tool_calls']} tool calls)"
+        f" | thinking {timing['thinking_s']:.2f}s ({timing['llm_calls']} LLM)"
+        f" | search {timing['search_s']:.2f}s ({timing['tool_calls']} calls)"
+        f" | ~${cost_usd:.5f}"
         f" — {len(raw)} chars",
         file=sys.stderr,
     )
@@ -753,28 +740,25 @@ def research_agent(state: AgentNodeState) -> dict:
 
 def synthesizer(state: WorkflowState) -> dict:
     """
-    Fan-in : reçoit tous les résultats accumulés et produit la synthèse Claude.
+    Fan-in : reçoit tous les résultats accumulés et produit la synthèse Claude (texte Markdown structuré).
     """
-    results   = state["agent_results"]
-    query     = state["query"]
-    agent_keys = [r["key"] for r in results]
+    results    = state["agent_results"]
+    query      = state["query"]
 
     print(f"\n[Workflow] Synthèse Claude ({MODEL_CLAUDE} via Anthropic) sur {len(results)} outputs...", file=sys.stderr)
     t0 = time.perf_counter()
 
-    # Contexte pour Claude
-    context = "\n\n".join(
-        f"── {r['label']} [{r['tool']}] ──\n{r['raw'][:2500]}"
-        for r in results
-    )
-
-    # Clés JSON dynamiques selon les agents présents
-    unique_keys  = ", ".join(f'"{k}": ["insight propre à {k}"]' for k in agent_keys)
-    qa_keys      = ", ".join(f'"{k}": "évaluation qualité sources {k}"' for k in agent_keys)
-    qa_keys2     = ", ".join(f'"{k}": "évaluation globale {k}"' for k in agent_keys)
-    mcomp_keys   = ", ".join(f'"{k}": "force approche {k}"' for k in agent_keys)
-    mcomp_keys2  = ", ".join(f'"{k}": "faiblesse approche {k}"' for k in agent_keys)
-    ranking      = json.dumps(agent_keys)
+    # Contexte pour Claude — inclut label, outil, timing et contenu brut
+    context_parts = []
+    for r in results:
+        t = r.get("timing", {})
+        header = (
+            f"── {r['label']} [{r['tool']}]"
+            f" | thinking {t.get('thinking_s', 0):.1f}s ({t.get('llm_calls', 0)} LLM)"
+            f" | search {t.get('search_s', 0):.1f}s ({t.get('tool_calls', 0)} appels) ──"
+        )
+        context_parts.append(f"{header}\n{r['raw'][:2500]}")
+    context = "\n\n".join(context_parts)
 
     try:
         llm = make_claude_llm()
@@ -784,25 +768,33 @@ def synthesizer(state: WorkflowState) -> dict:
                 n=len(results),
                 query=query,
                 context=context,
-                unique_keys=unique_keys,
-                qa_keys=qa_keys,
-                qa_keys2=qa_keys2,
-                mcomp_keys=mcomp_keys,
-                mcomp_keys2=mcomp_keys2,
-                ranking_placeholder=ranking,
             )),
         ])
         raw_synthesis = clean_text(str(response.content))
+        usage = getattr(response, "usage_metadata", None)
+        real_in  = usage.get("input_tokens",  0) if usage else 0
+        real_out = usage.get("output_tokens",  0) if usage else 0
     except Exception as exc:
-        raw_synthesis = f"Erreur synthèse : {exc}"
+        raw_synthesis = f"## SYNTHÈSE FINALE\nErreur synthèse : {exc}"
+        real_in  = 0
+        real_out = 0
 
-    duration = time.perf_counter() - t0
-    print(f"  ✓ [Claude Sonnet] {duration:.2f}s", file=sys.stderr)
+    duration    = time.perf_counter() - t0
+    claude_cost = estimate_llm_cost(MODEL_CLAUDE, real_in, real_out)
+    print(
+        f"  ✓ [Claude Sonnet] {duration:.2f}s"
+        f" | {real_in} in / {real_out} out tokens"
+        f" | ~${claude_cost:.5f}",
+        file=sys.stderr,
+    )
 
     return {
         "synthesis": {
-            **parse_synthesis(raw_synthesis, agent_keys),
-            "_duration_s": round(duration, 2),
+            **parse_synthesis_markdown(raw_synthesis),
+            "_duration_s":    round(duration, 2),
+            "_cost_usd":      claude_cost,
+            "_input_tokens":  real_in,
+            "_output_tokens": real_out,
         }
     }
 
@@ -860,6 +852,10 @@ def run_workflow(query: str) -> dict:
     results  = final_state["agent_results"]
     agent_keys = [r["key"] for r in results]
 
+    agents_cost = sum(r.get("timing", {}).get("cost", {}).get("total_usd", 0.0) for r in results)
+    claude_cost = final_state["synthesis"].get("_cost_usd", 0.0)
+    total_cost  = round(agents_cost + claude_cost, 6)
+
     return {
         "query": query,
         "meta": {
@@ -882,6 +878,17 @@ def run_workflow(query: str) -> dict:
                 "synthesis_s": final_state["synthesis"].get("_duration_s", 0),
                 "per_agent": {
                     r["key"]: r.get("timing", {"total_s": r["duration_s"]})
+                    for r in results
+                },
+            },
+            "cost": {
+                "total_usd":         total_cost,
+                "agents_usd":        round(agents_cost, 6),
+                "claude_usd":        round(claude_cost, 6),
+                "claude_in_tokens":  final_state["synthesis"].get("_input_tokens", 0),
+                "claude_out_tokens": final_state["synthesis"].get("_output_tokens", 0),
+                "per_agent": {
+                    r["key"]: r.get("timing", {}).get("cost", {"total_usd": 0.0})
                     for r in results
                 },
             },
@@ -920,7 +927,7 @@ _HTML_TEMPLATE = """\
   --bg:#0d0d14;--surface:#15151f;--card:#1c1c2a;--border:#2a2a3d;
   --text:#e2e2f0;--muted:#6b6b90;--accent:#7c3aed;--accent2:#a855f7;
   --thinking:#7c3aed;--search:#06b6d4;--other:#2e2e42;
-  --good:#10b981;--warn:#f59e0b;--danger:#f43f5e;
+  --good:#10b981;--warn:#f59e0b;--danger:#f43f5e;--cost:#f97316;
 }}
 *{{box-sizing:border-box;margin:0;padding:0}}
 body{{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.6}}
@@ -996,35 +1003,38 @@ tr:hover td{{background:#1e1e2e}}
 .tm .tl{{font-size:.68rem;color:var(--muted)}}
 /* Synthesis */
 .scard{{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px}}
-.conf-row{{display:flex;align-items:center;gap:16px;padding:14px;background:var(--bg);border-radius:8px;margin-bottom:18px}}
+.conf-row{{display:flex;align-items:center;gap:16px;padding:14px;background:var(--bg);border-radius:8px;margin-bottom:20px}}
 .cring{{position:relative;width:68px;height:68px;flex-shrink:0}}
 .cring svg{{transform:rotate(-90deg)}}
 .cring .cv{{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:1rem;font-weight:800}}
 .cinfo .cl{{font-size:.95rem;font-weight:700;margin-bottom:3px}}
 .cinfo .cr{{font-size:.8rem;color:var(--muted)}}
-.slist{{list-style:none;display:flex;flex-direction:column;gap:5px}}
-.slist li{{font-size:.82rem;padding:7px 10px;background:var(--bg);border-radius:6px;border-left:3px solid var(--border)}}
-.slist li.good{{border-color:var(--good)}}
-.slist li.warn{{border-color:var(--warn)}}
-.slist li.danger{{border-color:var(--danger)}}
-.kfc{{padding:9px 12px;background:var(--bg);border-radius:7px;display:flex;gap:9px;align-items:flex-start;margin-bottom:5px}}
-.kfbadge{{padding:2px 6px;border-radius:3px;font-size:.68rem;font-weight:700;text-transform:uppercase;flex-shrink:0;margin-top:1px}}
-.kfbadge.high{{background:#0d3321;color:var(--good)}}
-.kfbadge.medium{{background:#2d2000;color:var(--warn)}}
-.kfbadge.low{{background:#2d0f0f;color:var(--danger)}}
-.kftxt{{font-size:.82rem;flex:1}}
-.kfby{{font-size:.7rem;color:var(--muted);margin-top:2px}}
+.syn-block{{margin-bottom:18px}}
+.syn-block .ctitle{{margin-bottom:8px}}
+.syn-lines{{list-style:none;display:flex;flex-direction:column;gap:4px}}
+.syn-lines li{{font-size:.83rem;padding:7px 11px;background:var(--bg);border-radius:6px;border-left:3px solid var(--border)}}
+.syn-lines li.good{{border-color:var(--good)}}
+.syn-lines li.warn{{border-color:var(--warn)}}
+.syn-lines li.danger{{border-color:var(--danger)}}
+.reason-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-bottom:20px}}
+.rcard{{background:var(--bg);border-radius:8px;padding:12px 14px;border-left:4px solid var(--border)}}
+.rcard-head{{display:flex;align-items:center;gap:8px;margin-bottom:6px}}
+.rcard-head h4{{font-size:.84rem;font-weight:700;flex:1}}
+.rcard-body{{font-size:.8rem;color:var(--muted);line-height:1.55}}
 .final{{padding:16px;background:var(--bg);border-radius:8px;border-left:4px solid var(--accent);
-  font-size:.88rem;line-height:1.8;margin-top:16px}}
-.mcomp-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px;margin-top:8px}}
-.mcc{{background:var(--bg);border-radius:7px;padding:10px 12px}}
-.mcl{{font-size:.73rem;font-weight:700;color:var(--muted);margin-bottom:6px;display:flex;align-items:center;gap:5px}}
-.mcs{{font-size:.79rem;color:var(--good);margin-bottom:3px}}
-.mcw{{font-size:.79rem;color:var(--warn)}}
+  font-size:.88rem;line-height:1.8;margin-top:4px}}
 .rec{{padding:9px 12px;background:var(--bg);border-radius:7px;border-left:3px solid var(--accent2);margin-bottom:6px}}
 .rtopic{{font-size:.84rem;font-weight:700;margin-bottom:2px}}
 .rratio{{font-size:.78rem;color:var(--muted)}}
 footer{{text-align:center;padding:20px;font-size:.76rem;color:var(--muted);border-top:1px solid var(--border)}}
+/* Cost cards */
+.cost-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;margin-bottom:18px}}
+.ccard{{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px}}
+.ccard-head{{display:flex;align-items:center;gap:8px;margin-bottom:10px}}
+.ccard-head h4{{font-size:.85rem;font-weight:700;flex:1}}
+.cost-row{{display:flex;justify-content:space-between;font-size:.78rem;margin-bottom:3px}}
+.cost-row .cv2{{font-weight:700}}
+.cost-total{{font-size:.95rem;font-weight:800;color:var(--cost);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)}}
 @media(max-width:800px){{.grid2,.grid3{{grid-template-columns:1fr}}.trow{{grid-template-columns:120px 1fr 60px}}}}
 </style>
 </head>
@@ -1041,6 +1051,7 @@ footer{{text-align:center;padding:20px;font-size:.76rem;color:var(--muted);borde
       <div class="hs"><div class="v" id="ha"></div><div class="l">Agents</div></div>
       <div class="hs"><div class="v" id="hs2"></div><div class="l">Synthèse</div></div>
       <div class="hs"><div class="v" id="hc"></div><div class="l">Confiance</div></div>
+      <div class="hs"><div class="v" id="hcost" style="color:var(--cost)"></div><div class="l">Coût estimé</div></div>
     </div>
   </div>
 </header>
@@ -1102,30 +1113,59 @@ footer{{text-align:center;padding:20px;font-size:.76rem;color:var(--muted);borde
   </div>
 </section>
 
-<!-- 4. Synthèse Claude -->
+<!-- 4. Estimation des coûts -->
 <section>
-  <div class="stitle">④ Synthèse Claude — {claude_model}</div>
+  <div class="stitle">④ Estimation des coûts</div>
+  <div class="cost-grid" id="cost-cards"></div>
+  <div class="grid2">
+    <div class="card" style="height:280px">
+      <div class="ctitle">Coût LLM vs Search par agent (USD)</div>
+      <canvas id="chart-cost-bar"></canvas>
+    </div>
+    <div class="card" style="height:280px">
+      <div class="ctitle">Tokens input / output par agent</div>
+      <canvas id="chart-tokens"></canvas>
+    </div>
+  </div>
+</section>
+
+<!-- 5. Synthèse Claude -->
+<section>
+  <div class="stitle">⑤ Synthèse Claude — {claude_model}</div>
   <div class="scard">
     <div class="conf-row" id="conf"></div>
+
+    <div class="ctitle">Comparaison des raisonnements</div>
+    <div class="reason-grid" id="reason-grid"></div>
+
     <div class="grid2">
       <div>
-        <div class="ctitle">Résultats clés</div>
-        <div id="kfindings"></div>
-        <div class="ctitle" style="margin-top:16px">Consensus</div>
-        <ul class="slist" id="consensus"></ul>
-        <div class="ctitle" style="margin-top:16px">Contradictions</div>
-        <ul class="slist" id="contradictions"></ul>
+        <div class="syn-block">
+          <div class="ctitle">Résultats clés</div>
+          <ul class="syn-lines" id="syn-resultats"></ul>
+        </div>
+        <div class="syn-block">
+          <div class="ctitle">Consensus</div>
+          <ul class="syn-lines" id="syn-consensus"></ul>
+        </div>
+        <div class="syn-block">
+          <div class="ctitle">Contradictions</div>
+          <ul class="syn-lines" id="syn-contradictions"></ul>
+        </div>
       </div>
       <div>
-        <div class="ctitle">Angles morts</div>
-        <ul class="slist" id="blindspots"></ul>
-        <div class="ctitle" style="margin-top:16px">Comparaison méthodologique</div>
-        <div id="mcomp"></div>
-        <div class="ctitle" style="margin-top:16px">Recherches recommandées</div>
-        <div id="recs"></div>
+        <div class="syn-block">
+          <div class="ctitle">Angles morts</div>
+          <ul class="syn-lines" id="syn-angles"></ul>
+        </div>
+        <div class="syn-block">
+          <div class="ctitle">Recherches recommandées</div>
+          <div id="syn-recs"></div>
+        </div>
       </div>
     </div>
-    <div class="ctitle" style="margin-top:18px">Synthèse finale</div>
+
+    <div class="ctitle" style="margin-top:4px">Synthèse finale</div>
     <div class="final" id="final"></div>
   </div>
 </section>
@@ -1147,14 +1187,18 @@ const keys = Object.keys(PA);
 const maxT  = Math.max(...keys.map(k=>PA[k].total_s||0),1);
 const maxSS = Math.max(...keys.map(k=>PA[k].search_s||0),1);
 
+const COST = D.meta.cost||{{}};
+const fmtUsd = v => v!=null?'$'+Number(v).toFixed(4):'—';
+
 // Header
-document.getElementById('hq').textContent  = D.query;
-document.getElementById('ht').textContent  = T.total_s+'s';
-document.getElementById('ha').textContent  = keys.length;
-document.getElementById('hs2').textContent = T.synthesis_s+'s';
-const cs = SY.confidence_level?.score??'?';
-document.getElementById('hc').textContent  = cs+'%';
-document.getElementById('ft').textContent  = D.meta.stack+' · '+D.meta.workflow;
+document.getElementById('hq').textContent    = D.query;
+document.getElementById('ht').textContent    = T.total_s+'s';
+document.getElementById('ha').textContent    = keys.length;
+document.getElementById('hs2').textContent   = T.synthesis_s+'s';
+const cs = SY.confidence_score??'?';
+document.getElementById('hc').textContent    = cs+'%';
+document.getElementById('hcost').textContent = fmtUsd(COST.total_usd);
+document.getElementById('ft').textContent    = D.meta.stack+' · '+D.meta.workflow;
 
 // ① Timing bars
 const tb = document.getElementById('tbars');
@@ -1284,57 +1328,102 @@ keys.forEach(k => {{
   </tr>`;
 }});
 
-// ④ Synthesis
-const cl=SY.confidence_level||{{score:0,label:'?',rationale:''}};
-const sc=parseInt(cl.score)||0;
-const cc=sc>=70?'#10b981':sc>=40?'#f59e0b':'#f43f5e';
-const circ=2*Math.PI*26, dash=(sc/100*circ).toFixed(1);
+// ④ Cost cards
+const cc2 = document.getElementById('cost-cards');
+const perAgent = COST.per_agent||{{}};
+keys.forEach(k => {{
+  const t=PA[k], o=AO[k]||{{}}, c=col(k), ac=perAgent[k]||{{}};
+  const llmC=ac.llm_usd||0, srC=ac.search_usd||0, totC=ac.total_usd||0;
+  const tb2=o.tool==='linkup'?'<span class="badge bl">Linkup</span>':'<span class="badge bt">Tavily</span>';
+  cc2.innerHTML+=`<div class="ccard" style="border-top:3px solid ${{c}}">
+    <div class="ccard-head"><span class="dot" style="background:${{c}}"></span><h4>${{o.label||k}}</h4>${{tb2}}</div>
+    <div class="cost-row"><span style="color:var(--muted)">LLM (${{t.input_tokens||0}}in/${{t.output_tokens||0}}out tok)</span><span class="cv2">${{fmtUsd(llmC)}}</span></div>
+    <div class="cost-row"><span style="color:var(--muted)">Search (${{t.tool_calls||0}} appels)</span><span class="cv2">${{fmtUsd(srC)}}</span></div>
+    <div class="cost-total">Total ≈ ${{fmtUsd(totC)}}</div>
+  </div>`;
+}});
+// Claude cost card
+cc2.innerHTML+=`<div class="ccard" style="border-top:3px solid #a855f7">
+  <div class="ccard-head"><span class="dot" style="background:#a855f7"></span><h4>Claude Sonnet</h4><span class="badge" style="background:#2d1b5e;color:#c4b5fd">Anthropic</span></div>
+  <div class="cost-row"><span style="color:var(--muted)">Tokens utilisés</span><span class="cv2">${{COST.claude_in_tokens||0}} in / ${{COST.claude_out_tokens||0}} out</span></div>
+  <div class="cost-total">Total ≈ ${{fmtUsd(COST.claude_usd)}}</div>
+</div>`;
+
+// Cost stacked bar
+mkChart('chart-cost-bar','bar',{{
+  labels: keys.map(k=>AO[k]?.label||k),
+  datasets:[
+    {{label:'LLM ($)', data:keys.map(k=>(perAgent[k]?.llm_usd||0).toFixed(6)), backgroundColor:'#7c3aed',borderRadius:4}},
+    {{label:'Search ($)', data:keys.map(k=>(perAgent[k]?.search_usd||0).toFixed(6)), backgroundColor:'#f97316',borderRadius:4}}
+  ]
+}},{{scales:{{x:{{stacked:true}},y:{{stacked:true}}}}}});
+
+// Token bar
+mkChart('chart-tokens','bar',{{
+  labels: keys.map(k=>AO[k]?.label||k),
+  datasets:[
+    {{label:'Input tokens', data:keys.map(k=>PA[k].input_tokens||0), backgroundColor:'#7c3aed',borderRadius:4}},
+    {{label:'Output tokens', data:keys.map(k=>PA[k].output_tokens||0), backgroundColor:'#06b6d4',borderRadius:4}}
+  ]
+}},{{}});
+
+// ⑤ Synthesis — helper: parse markdown sections from raw text
+const SEC = SY.sections||{{}};
+const getLines = name => (SEC[name]||'').split('\\n')
+  .map(l=>l.replace(/^[-*\u2022]\\s*/,'').trim()).filter(Boolean);
+
+// Confidence ring
+const sc = SY.confidence_score||0;
+const cc = sc>=70?'#10b981':sc>=40?'#f59e0b':'#f43f5e';
+const circ = 2*Math.PI*26, dash=(sc/100*circ).toFixed(1);
+const confText = SEC['NIVEAU DE CONFIANCE']||'—';
 document.getElementById('conf').innerHTML=`
   <div class="cring"><svg width="68" height="68" viewBox="0 0 68 68">
     <circle cx="34" cy="34" r="26" fill="none" stroke="#1e1e2e" stroke-width="8"/>
     <circle cx="34" cy="34" r="26" fill="none" stroke="${{cc}}" stroke-width="8"
       stroke-dasharray="${{dash}} ${{circ.toFixed(1)}}" stroke-linecap="round"/>
   </svg><div class="cv" style="color:${{cc}}">${{sc}}%</div></div>
-  <div class="cinfo"><div class="cl" style="color:${{cc}}">${{cl.label?.toUpperCase()||'—'}}</div>
-  <div class="cr">${{cl.rationale||'—'}}</div></div>`;
+  <div class="cinfo"><div class="cl" style="color:${{cc}};font-size:.85rem;font-weight:700">${{sc>=70?'ÉLEVÉ':sc>=40?'MOYEN':'FAIBLE'}}</div>
+  <div class="cr" style="max-width:480px">${{confText}}</div></div>`;
 
-const kfe=document.getElementById('kfindings');
-(SY.key_findings||[]).forEach(kf=>{{
-  const by=(kf.supported_by||[]).join(', ');
-  kfe.innerHTML+=`<div class="kfc">
-    <span class="kfbadge ${{kf.confidence||'medium'}}">${{kf.confidence||'—'}}</span>
-    <div><div class="kftxt">${{kf.finding||kf}}</div>${{by?`<div class="kfby">Supporté par : ${{by}}</div>`:''}}</div>
+// Comparaison des raisonnements — parse "**Label** : texte"
+const rg = document.getElementById('reason-grid');
+const reasonRaw = SEC['COMPARAISON DES RAISONNEMENTS']||'';
+const reasonLines = reasonRaw.split('\\n').filter(Boolean);
+keys.forEach(k=>{{
+  const lbl = AO[k]?.label||k;
+  const c   = col(k);
+  // find line mentioning this agent label
+  const line = reasonLines.find(l=>l.toLowerCase().includes(lbl.toLowerCase()))||'';
+  const body = line.replace(/^[*][*][^*]+[*][*]\\s*:/,'').trim()||'—';
+  const t = PA[k]||{{}};
+  rg.innerHTML+=`<div class="rcard" style="border-left-color:${{c}}">
+    <div class="rcard-head"><span class="dot" style="background:${{c}}"></span>
+      <h4>${{lbl}}</h4>
+      <span style="font-size:.7rem;color:var(--muted)">${{t.llm_calls||0}} LLM · ${{t.tool_calls||0}} tools</span>
+    </div>
+    <div class="rcard-body">${{body}}</div>
   </div>`;
 }});
 
-const ul=(id,items,cls)=>{{
+// Résultats clés
+const synUl=(id,lines,cls)=>{{
   const el=document.getElementById(id);
-  el.innerHTML=items.length?items.map(x=>`<li class="${{cls}}">${{x}}</li>`).join(''):'<li style="color:var(--muted)">—</li>';
+  el.innerHTML=lines.length?lines.map(x=>`<li class="${{cls}}">${{x}}</li>`).join(''):'<li style="color:var(--muted)">—</li>';
 }};
-ul('consensus', SY.consensus||[], 'good');
-const ct=SY.contradictions?.length?SY.contradictions:SY.disagreements||[];
-ul('contradictions', ct, 'danger');
-ul('blindspots', SY.blind_spots||[], 'warn');
+synUl('syn-resultats', getLines('RÉSULTATS CLÉS'), 'good');
+synUl('syn-consensus',  getLines('CONSENSUS'),      'good');
+synUl('syn-contradictions', getLines('CONTRADICTIONS'), 'danger');
+synUl('syn-angles', getLines('ANGLES MORTS'), 'warn');
 
-const mc=SY.methodology_comparison||{{}};
-const mg=document.getElementById('mcomp');
-let mchtml='<div class="mcomp-grid">';
-keys.forEach(k=>{{
-  const c=col(k), lbl=AO[k]?.label||k;
-  mchtml+=`<div class="mcc"><div class="mcl"><span class="dot" style="background:${{c}}"></span>${{lbl}}</div>
-    <div class="mcs">+ ${{mc.strengths?.[k]||'—'}}</div>
-    <div class="mcw">− ${{mc.weaknesses?.[k]||'—'}}</div></div>`;
-}});
-mchtml+='</div>';
-if(mc.complementarity) mchtml+=`<p style="font-size:.79rem;color:var(--muted);margin-top:8px;font-style:italic">${{mc.complementarity}}</p>`;
-mg.innerHTML=mchtml;
-
-const re=document.getElementById('recs');
-(SY.recommended_further_research||[]).forEach(r=>{{
-  re.innerHTML+=`<div class="rec"><div class="rtopic">🔭 ${{r.topic||r}}</div>${{r.rationale?`<div class="rratio">${{r.rationale}}</div>`:''}}</div>`;
+// Recherches recommandées
+const recsEl = document.getElementById('syn-recs');
+getLines('RECHERCHES RECOMMANDÉES').forEach(r=>{{
+  const [topic,...rest]=r.split(':');
+  recsEl.innerHTML+=`<div class="rec"><div class="rtopic">🔭 ${{topic.trim()}}</div>${{rest.length?`<div class="rratio">${{rest.join(':').trim()}}</div>`:''}}</div>`;
 }});
 
-document.getElementById('final').textContent = SY.final_synthesis||'—';
+document.getElementById('final').textContent = SEC['SYNTHÈSE FINALE']||SY.raw||'—';
 </script>
 </body>
 </html>"""
