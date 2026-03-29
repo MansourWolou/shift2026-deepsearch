@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DeepSearch — le venezuela est un etat des usa</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+:root{
+  --bg:#0d0d14;--surface:#15151f;--card:#1c1c2a;--border:#2a2a3d;
+  --text:#e2e2f0;--muted:#6b6b90;--accent:#7c3aed;--accent2:#a855f7;
+  --thinking:#7c3aed;--search:#06b6d4;--other:#2e2e42;
+  --good:#10b981;--warn:#f59e0b;--danger:#f43f5e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.6}
+a{color:var(--accent2);text-decoration:none}
+/* Header */
+header{background:var(--surface);border-bottom:1px solid var(--border);padding:18px 32px}
+.hrow{display:flex;align-items:flex-start;gap:24px;flex-wrap:wrap;max-width:1200px;margin:0 auto}
+.hlogo{font-size:1rem;font-weight:800;color:var(--accent2);white-space:nowrap;padding-top:4px}
+.hquery{flex:1;min-width:180px}
+.hquery label{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.hquery p{font-size:.95rem;font-weight:600;margin-top:2px}
+.hstats{display:flex;gap:20px;flex-wrap:wrap}
+.hs{text-align:center}
+.hs .v{font-size:1.4rem;font-weight:800;color:var(--accent2)}
+.hs .l{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+/* Layout */
+main{max-width:1200px;margin:0 auto;padding:28px 32px;display:flex;flex-direction:column;gap:28px}
+.stitle{font-size:.82rem;font-weight:700;color:var(--accent2);text-transform:uppercase;letter-spacing:.1em;
+  margin-bottom:14px;display:flex;align-items:center;gap:10px}
+.stitle::after{content:'';flex:1;height:1px;background:var(--border)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px}
+.ctitle{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+/* Timing bars */
+.trow{display:grid;grid-template-columns:152px 1fr 72px;align-items:center;gap:10px;margin-bottom:8px}
+.alabel{display:flex;align-items:center;gap:7px;font-size:.84rem;font-weight:600}
+.dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.track{height:22px;border-radius:4px;background:var(--bg);display:flex;overflow:hidden}
+.seg{height:100%}
+.seg:first-child{border-radius:4px 0 0 4px}
+.seg:last-child{border-radius:0 4px 4px 0}
+.ttotal{font-size:.84rem;font-weight:700;text-align:right}
+.legend{display:flex;gap:14px;font-size:.76rem;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+.legend span{display:flex;align-items:center;gap:5px}
+.legend i{width:10px;height:10px;border-radius:2px;display:inline-block}
+/* ReAct steps */
+.srow{display:grid;grid-template-columns:152px 1fr;align-items:center;gap:10px;margin-bottom:10px}
+.steps{display:flex;align-items:center;gap:3px;flex-wrap:nowrap;overflow:hidden}
+.sblk{border-radius:4px;display:flex;align-items:center;justify-content:center;
+  font-size:.68rem;font-weight:700;color:#fff;padding:0 6px;height:26px;white-space:nowrap;flex-shrink:0}
+.sllm{background:var(--thinking)}
+.stool{background:var(--search)}
+.sarrow{color:var(--muted);font-size:.8rem;flex-shrink:0;padding:0 2px}
+.smeta{font-size:.73rem;color:var(--muted);margin-left:8px;white-space:nowrap}
+/* Search table */
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:8px 10px;font-size:.74rem;text-transform:uppercase;
+  letter-spacing:.06em;color:var(--muted);border-bottom:1px solid var(--border)}
+td{padding:9px 10px;border-bottom:1px solid var(--border);font-size:.83rem;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#1e1e2e}
+.badge{padding:2px 7px;border-radius:4px;font-size:.7rem;font-weight:700;text-transform:uppercase}
+.bt{background:#0e3344;color:#06b6d4}
+.bl{background:#2d1b5e;color:#8b5cf6}
+.mbar{display:flex;align-items:center;gap:6px}
+.mbtrack{flex:1;height:5px;background:var(--bg);border-radius:3px;overflow:hidden;min-width:40px}
+.mbfill{height:100%;border-radius:3px}
+.mbval{font-size:.8rem;font-weight:700;min-width:34px;text-align:right}
+/* Thinking cards */
+.tcard{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.tchead{padding:12px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border)}
+.tchead h3{font-size:.9rem;font-weight:700;flex:1}
+.tcbody{padding:14px 16px}
+.summary{font-size:.82rem;color:var(--muted);font-style:italic;margin-bottom:10px;
+  padding-bottom:10px;border-bottom:1px solid var(--border)}
+.kps{list-style:none;display:flex;flex-direction:column;gap:4px}
+.kps li{font-size:.81rem;padding-left:12px;position:relative}
+.kps li::before{content:'›';position:absolute;left:0;color:var(--accent2)}
+.tmini{display:flex;gap:10px;margin-top:12px;padding-top:10px;border-top:1px solid var(--border)}
+.tm{flex:1;display:flex;flex-direction:column;align-items:center}
+.tm .tv{font-size:.92rem;font-weight:700}
+.tm .tl{font-size:.68rem;color:var(--muted)}
+/* Synthesis */
+.scard{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px}
+.conf-row{display:flex;align-items:center;gap:16px;padding:14px;background:var(--bg);border-radius:8px;margin-bottom:18px}
+.cring{position:relative;width:68px;height:68px;flex-shrink:0}
+.cring svg{transform:rotate(-90deg)}
+.cring .cv{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:1rem;font-weight:800}
+.cinfo .cl{font-size:.95rem;font-weight:700;margin-bottom:3px}
+.cinfo .cr{font-size:.8rem;color:var(--muted)}
+.slist{list-style:none;display:flex;flex-direction:column;gap:5px}
+.slist li{font-size:.82rem;padding:7px 10px;background:var(--bg);border-radius:6px;border-left:3px solid var(--border)}
+.slist li.good{border-color:var(--good)}
+.slist li.warn{border-color:var(--warn)}
+.slist li.danger{border-color:var(--danger)}
+.kfc{padding:9px 12px;background:var(--bg);border-radius:7px;display:flex;gap:9px;align-items:flex-start;margin-bottom:5px}
+.kfbadge{padding:2px 6px;border-radius:3px;font-size:.68rem;font-weight:700;text-transform:uppercase;flex-shrink:0;margin-top:1px}
+.kfbadge.high{background:#0d3321;color:var(--good)}
+.kfbadge.medium{background:#2d2000;color:var(--warn)}
+.kfbadge.low{background:#2d0f0f;color:var(--danger)}
+.kftxt{font-size:.82rem;flex:1}
+.kfby{font-size:.7rem;color:var(--muted);margin-top:2px}
+.final{padding:16px;background:var(--bg);border-radius:8px;border-left:4px solid var(--accent);
+  font-size:.88rem;line-height:1.8;margin-top:16px}
+.mcomp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px;margin-top:8px}
+.mcc{background:var(--bg);border-radius:7px;padding:10px 12px}
+.mcl{font-size:.73rem;font-weight:700;color:var(--muted);margin-bottom:6px;display:flex;align-items:center;gap:5px}
+.mcs{font-size:.79rem;color:var(--good);margin-bottom:3px}
+.mcw{font-size:.79rem;color:var(--warn)}
+.rec{padding:9px 12px;background:var(--bg);border-radius:7px;border-left:3px solid var(--accent2);margin-bottom:6px}
+.rtopic{font-size:.84rem;font-weight:700;margin-bottom:2px}
+.rratio{font-size:.78rem;color:var(--muted)}
+footer{text-align:center;padding:20px;font-size:.76rem;color:var(--muted);border-top:1px solid var(--border)}
+@media(max-width:800px){.grid2,.grid3{grid-template-columns:1fr}.trow{grid-template-columns:120px 1fr 60px}}
+</style>
+</head>
+<body>
+<header>
+  <div class="hrow">
+    <div class="hlogo">⚡ DeepSearch</div>
+    <div class="hquery">
+      <label>Requête analysée</label>
+      <p id="hq"></p>
+    </div>
+    <div class="hstats">
+      <div class="hs"><div class="v" id="ht"></div><div class="l">Durée totale</div></div>
+      <div class="hs"><div class="v" id="ha"></div><div class="l">Agents</div></div>
+      <div class="hs"><div class="v" id="hs2"></div><div class="l">Synthèse</div></div>
+      <div class="hs"><div class="v" id="hc"></div><div class="l">Confiance</div></div>
+    </div>
+  </div>
+</header>
+<main>
+
+<!-- 1. Temps de traitement -->
+<section>
+  <div class="stitle">① Temps de traitement</div>
+  <div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div class="ctitle" style="margin:0">Thinking · Search · Overhead par agent</div>
+      <div class="legend">
+        <span><i style="background:var(--thinking)"></i>Thinking LLM</span>
+        <span><i style="background:var(--search)"></i>Search outil</span>
+        <span><i style="background:var(--other)"></i>Overhead</span>
+      </div>
+    </div>
+    <div id="tbars"></div>
+  </div>
+</section>
+
+<!-- 2. Pertinence du thinking -->
+<section>
+  <div class="stitle">② Pertinence du thinking</div>
+  <div class="grid2" style="margin-bottom:18px">
+    <div class="card" style="height:280px">
+      <div class="ctitle">% thinking vs total par agent</div>
+      <canvas id="chart-ratio"></canvas>
+    </div>
+    <div class="card" style="height:280px">
+      <div class="ctitle">Temps moyen par appel LLM (s)</div>
+      <canvas id="chart-avg"></canvas>
+    </div>
+  </div>
+  <div id="agent-cards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px"></div>
+</section>
+
+<!-- 3. Comparaison des searches -->
+<section>
+  <div class="stitle">③ Comparaison des recherches</div>
+  <div class="grid2" style="margin-bottom:18px">
+    <div class="card" style="height:280px">
+      <div class="ctitle">Appels LLM vs outil</div>
+      <canvas id="chart-calls"></canvas>
+    </div>
+    <div class="card" style="height:280px">
+      <div class="ctitle">Séquence ReAct par agent</div>
+      <div id="react-steps" style="margin-top:8px"></div>
+    </div>
+  </div>
+  <div class="card">
+    <table>
+      <thead><tr>
+        <th>Agent</th><th>Outil</th><th>Appels</th>
+        <th>Search total</th><th>Moy/appel</th><th>Sources</th><th>% search/total</th>
+      </tr></thead>
+      <tbody id="stbody"></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- 4. Synthèse Claude -->
+<section>
+  <div class="stitle">④ Synthèse Claude — claude-sonnet-4-5</div>
+  <div class="scard">
+    <div class="conf-row" id="conf"></div>
+    <div class="grid2">
+      <div>
+        <div class="ctitle">Résultats clés</div>
+        <div id="kfindings"></div>
+        <div class="ctitle" style="margin-top:16px">Consensus</div>
+        <ul class="slist" id="consensus"></ul>
+        <div class="ctitle" style="margin-top:16px">Contradictions</div>
+        <ul class="slist" id="contradictions"></ul>
+      </div>
+      <div>
+        <div class="ctitle">Angles morts</div>
+        <ul class="slist" id="blindspots"></ul>
+        <div class="ctitle" style="margin-top:16px">Comparaison méthodologique</div>
+        <div id="mcomp"></div>
+        <div class="ctitle" style="margin-top:16px">Recherches recommandées</div>
+        <div id="recs"></div>
+      </div>
+    </div>
+    <div class="ctitle" style="margin-top:18px">Synthèse finale</div>
+    <div class="final" id="final"></div>
+  </div>
+</section>
+
+</main>
+<footer id="ft"></footer>
+
+<script>
+const D = {"query": "le venezuela est un etat des usa", "meta": {"stack": "LangGraph + LangChain + OpenRouter", "workflow": "fan-out → research_agent×N → synthesizer", "tools": {"tavily": ["cerebras_8b", "groq_8b", "qwen_7b", "llama_3b"], "linkup": ["linkup_agent"]}, "models": {"cerebras_8b": {"model": "meta-llama/llama-3.1-8b-instruct", "provider": ["Cerebras"], "tool": "tavily"}, "groq_8b": {"model": "meta-llama/llama-3.1-8b-instruct", "provider": ["Groq"], "tool": "tavily"}, "qwen_7b": {"model": "qwen/qwen-2.5-7b-instruct", "provider": ["auto:throughput"], "tool": "tavily"}, "llama_3b": {"model": "meta-llama/llama-3.2-3b-instruct", "provider": ["auto:throughput"], "tool": "tavily"}, "linkup_agent": {"model": "qwen/qwen-2.5-7b-instruct", "provider": ["auto:throughput"], "tool": "linkup"}}, "timing": {"total_s": 76.56, "synthesis_s": 63.37, "per_agent": {"cerebras_8b": {"total_s": 5.867, "thinking_s": 5.51, "search_s": 0.0, "other_s": 0.357, "llm_calls": 1, "tool_calls": 0}, "groq_8b": {"total_s": 10.912, "thinking_s": 8.988, "search_s": 1.57, "other_s": 0.354, "llm_calls": 2, "tool_calls": 1}, "qwen_7b": {"total_s": 13.173, "thinking_s": 12.962, "search_s": 0.0, "other_s": 0.211, "llm_calls": 1, "tool_calls": 0}, "llama_3b": {"total_s": 5.489, "thinking_s": 5.295, "search_s": 0.0, "other_s": 0.194, "llm_calls": 1, "tool_calls": 0}, "linkup_agent": {"total_s": 10.894, "thinking_s": 10.526, "search_s": 0.0, "other_s": 0.368, "llm_calls": 1, "tool_calls": 0}}}}, "agent_outputs": {"cerebras_8b": {"label": "Cerebras 8B", "tool": "tavily", "raw": "{\"type\": \"function\", \"name\": \"tavily_search\", \"arguments\": {\"query\": \"Venezuela est-il un Etat des USA\", \"topic\": \"news\", \"search_depth\": \"advanced\", \"include_images\": \"false\", \"time_range\": \"month\", \"start_date\": \"2024-01-01\", \"end_date\": \"2024-03-31\", \"include_domains\": \"null\", \"exclude_domains\": \"null\"}}", "structured": {"executive_summary": "", "key_points": [], "assumptions": [], "uncertainties": [], "sources": []}, "timing": {"total_s": 5.867, "thinking_s": 5.51, "search_s": 0.0, "other_s": 0.357, "llm_calls": 1, "tool_calls": 0}}, "groq_8b": {"label": "Groq 8B", "tool": "tavily", "raw": "{\"executive_summary\": \"Venezuela est un État indépendant et souverain, et non un État des États-Unis. Il a son propre gouvernement et système politique, séparé de celui des États-Unis.\", \"key_points\": [\"Venezuela est un État indépendant\", \"Il a son propre gouvernement et système politique\", \"Il n'est pas un État des États-Unis\"], \"assumptions\": [\"Les informations fournies sont récentes et fiables\"], \"uncertainties\": [\"La situation politique en Venezuela peut évoluer rapidement\"], \"sources\": [\"BBC\", \"Reuters\", \"The New York Times\"]}", "structured": {"executive_summary": "Venezuela est un État indépendant et souverain, et non un État des États-Unis. Il a son propre gouvernement et système politique, séparé de celui des États-Unis.", "key_points": ["Venezuela est un État indépendant", "Il a son propre gouvernement et système politique", "Il n'est pas un État des États-Unis"], "assumptions": ["Les informations fournies sont récentes et fiables"], "uncertainties": ["La situation politique en Venezuela peut évoluer rapidement"], "sources": ["BBC", "Reuters", "The New York Times"]}, "timing": {"total_s": 10.912, "thinking_s": 8.988, "search_s": 1.57, "other_s": 0.354, "llm_calls": 2, "tool_calls": 1}}, "qwen_7b": {"label": "Qwen 2.5 7B", "tool": "tavily", "raw": "{\n  \"executive_summary\": \"Venezuela n'est pas un état des États-Unis. C'est une république fédérale située en Amérique du Sud. Il existe une confusion possible avec les termes 'État' et 'État membre', mais Venezuela fait partie des États-Unis d'Amérique en tant qu'État fédéré, ce qui n'est pas le cas des États-Unis d'Amérique en tant que pays.\",\n  \"key_points\": [\n    \"Venezuela est une république fédérale en Amérique du Sud.\",\n    \"Il n'y a pas de lien de souveraineté entre le Venezuela et les États-Unis.\",\n    \"Le Venezuela fait partie des États-Unis d'Amérique en tant qu'État fédéré, mais ce n'est pas correct dans ce contexte.\",\n    \"La confusion peut provenir de la structure politique des États-Unis, où les États sont des entités administratives autonomes.\"\n  ],\n  \"assumptions\": [\n    \"Les sources consultées ne contiennent pas d'informations erronées ou obsolètes concernant la relation entre le Venezuela et les États-Unis.\"\n  ],\n  \"uncertainties\": [],\n  \"sources\": [\n    \"https://www.britannica.com/place/Venezuela\"\n  ]\n}", "structured": {"executive_summary": "Venezuela n'est pas un état des États-Unis. C'est une république fédérale située en Amérique du Sud. Il existe une confusion possible avec les termes 'État' et 'État membre', mais Venezuela fait partie des États-Unis d'Amérique en tant qu'État fédéré, ce qui n'est pas le cas des États-Unis d'Amérique en tant que pays.", "key_points": ["Venezuela est une république fédérale en Amérique du Sud.", "Il n'y a pas de lien de souveraineté entre le Venezuela et les États-Unis.", "Le Venezuela fait partie des États-Unis d'Amérique en tant qu'État fédéré, mais ce n'est pas correct dans ce contexte.", "La confusion peut provenir de la structure politique des États-Unis, où les États sont des entités administratives autonomes."], "assumptions": ["Les sources consultées ne contiennent pas d'informations erronées ou obsolètes concernant la relation entre le Venezuela et les États-Unis."], "uncertainties": [], "sources": ["https://www.britannica.com/place/Venezuela"]}, "timing": {"total_s": 13.173, "thinking_s": 12.962, "search_s": 0.0, "other_s": 0.211, "llm_calls": 1, "tool_calls": 0}}, "llama_3b": {"label": "Llama 3.2 3B", "tool": "tavily", "raw": "Erreur agent : Error code: 404 - {'error': {'message': 'No endpoints found that support tool use. To learn more about provider routing, visit: https://openrouter.ai/docs/guides/routing/provider-selection', 'code': 404}}", "structured": {"executive_summary": "Erreur agent : Error code: 404 - {'error': {'message': 'No endpoints found that support tool use. To learn more about provider routing, visit: https://openrouter.ai/docs/guides/routing/provider-selection', 'code': 404}}", "key_points": [], "assumptions": [], "uncertainties": ["Réponse non parseable."], "sources": []}, "timing": {"total_s": 5.489, "thinking_s": 5.295, "search_s": 0.0, "other_s": 0.194, "llm_calls": 1, "tool_calls": 0}}, "linkup_agent": {"label": "Linkup Agent (Qwen 2.5 7B)", "tool": "linkup", "raw": "{\n  \"executive_summary\": \"Le Venezuela n'est pas un état des États-Unis d'Amérique. Il est une république fédérale située dans l'continent sud-américain, indépendante et distincte des États-Unis.\",\n  \"key_points\": [\n    \"Le Venezuela est un pays indépendant situé en Amérique du Sud.\",\n    \"Il n'a jamais fait partie des États-Unis.\",\n    \"La République bolivarienne du Venezuela a obtenu son indépendance des Espagnols en 1830.\"\n  ],\n  \"assumptions\": [\n    \"Les sources consultées ne mentionnent pas de rattachement historique ou politique entre le Venezuela et les États-Unis.\"\n  ],\n  \"uncertainties\": [],\n  \"sources\": [\n    \"https://fr.wikipedia.org/wiki/Venezuela\",\n    \"https://www.britannica.com/place/Venezuela\",\n    \"https://www.state.gov/venezuela/\"\n  ]\n}", "structured": {"executive_summary": "Le Venezuela n'est pas un état des États-Unis d'Amérique. Il est une république fédérale située dans l'continent sud-américain, indépendante et distincte des États-Unis.", "key_points": ["Le Venezuela est un pays indépendant situé en Amérique du Sud.", "Il n'a jamais fait partie des États-Unis.", "La République bolivarienne du Venezuela a obtenu son indépendance des Espagnols en 1830."], "assumptions": ["Les sources consultées ne mentionnent pas de rattachement historique ou politique entre le Venezuela et les États-Unis."], "uncertainties": [], "sources": ["https://fr.wikipedia.org/wiki/Venezuela", "https://www.britannica.com/place/Venezuela", "https://www.state.gov/venezuela/"]}, "timing": {"total_s": 10.894, "thinking_s": 10.526, "search_s": 0.0, "other_s": 0.368, "llm_calls": 1, "tool_calls": 0}}}, "synthesis": {"consensus": [], "contradictions": [], "disagreements": [], "unique_insights": {"cerebras_8b": [], "groq_8b": [], "qwen_7b": [], "llama_3b": [], "linkup_agent": []}, "blind_spots": [], "key_findings": [], "methodology_comparison": {"strengths": {"cerebras_8b": "", "groq_8b": "", "qwen_7b": "", "llama_3b": "", "linkup_agent": ""}, "weaknesses": {"cerebras_8b": "", "groq_8b": "", "qwen_7b": "", "llama_3b": "", "linkup_agent": ""}, "complementarity": ""}, "source_quality_assessment": {"cerebras_8b": "", "groq_8b": "", "qwen_7b": "", "llama_3b": "", "linkup_agent": ""}, "quality_assessment": {"cerebras_8b": "", "groq_8b": "", "qwen_7b": "", "llama_3b": "", "linkup_agent": ""}, "confidence_level": {"score": 0, "label": "low", "rationale": "Parsing échoué."}, "recommended_further_research": [], "quality_ranking": ["cerebras_8b", "groq_8b", "qwen_7b", "llama_3b", "linkup_agent"], "final_synthesis": "```json\n{\n  \"consensus\": [\n    \"Le Venezuela est un État indépendant et souverain, non un État membre des États-Unis (validé par groq_8b, linkup_agent avec sources Britannica, Wikipedia, State.gov)\",\n    \"Le Venezuela est situé en Amérique du Sud et possède son propre gouvernement et système politique (validé par groq_8b, qwen_7b, linkup_agent)\",\n    \"Il n'existe aucun lien de souveraineté ou d'appartenance politique entre le Venezuela et les États-Unis (validé par groq_8b, qwen_7b, linkup_agent)\"\n  ],\n  \"contradictions\": [\n    \"Qwen_7b affirme 'Le Venezuela fait partie des États-Unis d'Amérique en tant qu'État fédéré' puis se contredit immédiatement en précisant 'mais ce n'est pas correct dans ce contexte' — origine probable : confusion conceptuelle dans le traitement de la requête ou hallucination du modèle sur la structure fédérale\",\n    \"Qwen_7b qualifie le Venezuela de 'république fédérale' alors que linkup_agent le désigne comme 'République bolivarienne' — origine probable : imprécision terminologique, le Venezuela étant officiellement une république bolivarienne depuis 1999\"\n  ],\n  \"disagreements\": [\n    \"Qwen_7b vs linkup_agent/groq_8b : confusion sur le statut fédéral du Venezuela et affirmation contradictoire sur son appartenance aux USA\",\n    \"Qwen_7b vs linkup_agent : désaccord sur la qualification constitutionnelle exacte (république fédérale vs république bolivarienne)\"\n  ],\n  \"unique_insights\": {\n    \"cerebras_8b\": [\"Tentative de recherche avec paramètres temporels spécifiques (janvier-mars 2024) et profondeur avancée, mais aucun résultat retourné\"],\n    \"groq_8b\": [\"Identification explicite de l'incertitude liée à l'évolution rapide de la situation politique vénézuélienne\", \"Mention de sources médiatiques de référence (BBC, Reuters, NYT) bien que non directement citées\"],\n    \"qwen_7b\": [\"Identification de la source potentielle de confusion : la structure fédérale des États-Unis et l'usage du terme 'État'\", \"Reconnaissance explicite d'une erreur conc"}};
+const COLORS = {
+  cerebras_8b:'#06b6d4',groq_8b:'#f59e0b',qwen_7b:'#10b981',
+  llama_3b:'#f43f5e',linkup_agent:'#8b5cf6'
+};
+const col = k => COLORS[k]||'#7c3aed';
+const fmt = n => typeof n==='number'?n.toFixed(2)+'s':n;
+
+const T = D.meta.timing, PA = T.per_agent, AO = D.agent_outputs, SY = D.synthesis;
+const keys = Object.keys(PA);
+const maxT  = Math.max(...keys.map(k=>PA[k].total_s||0),1);
+const maxSS = Math.max(...keys.map(k=>PA[k].search_s||0),1);
+
+// Header
+document.getElementById('hq').textContent  = D.query;
+document.getElementById('ht').textContent  = T.total_s+'s';
+document.getElementById('ha').textContent  = keys.length;
+document.getElementById('hs2').textContent = T.synthesis_s+'s';
+const cs = SY.confidence_level?.score??'?';
+document.getElementById('hc').textContent  = cs+'%';
+document.getElementById('ft').textContent  = D.meta.stack+' · '+D.meta.workflow;
+
+// ① Timing bars
+const tb = document.getElementById('tbars');
+keys.forEach(k => {
+  const t=PA[k], lbl=AO[k]?.label||k, c=col(k);
+  const pct = v => ((v/maxT)*100).toFixed(1)+'%';
+  tb.innerHTML += `<div class="trow">
+    <div class="alabel"><span class="dot" style="background:${c}"></span>${lbl}</div>
+    <div class="track" title="thinking:${t.thinking_s}s  search:${t.search_s}s  overhead:${t.other_s||0}s">
+      <div class="seg" style="width:${pct(t.thinking_s)};background:var(--thinking)"></div>
+      <div class="seg" style="width:${pct(t.search_s)};background:var(--search)"></div>
+      <div class="seg" style="width:${pct(t.other_s||0)};background:var(--other)"></div>
+    </div>
+    <div class="ttotal">${t.total_s}s</div>
+  </div>`;
+});
+
+// ② Charts
+const charts = [];
+const mkChart = (id,type,data,opts) => {
+  const c=new Chart(document.getElementById(id),{type,data,options:{
+    responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{labels:{color:'#6b6b90',font:{size:10}}}},
+    scales:type!=='doughnut'?{
+      x:{ticks:{color:'#6b6b90',font:{size:10}},grid:{color:'#1e1e2e'}},
+      y:{ticks:{color:'#6b6b90'},grid:{color:'#1e1e2e'},beginAtZero:true}
+    }:undefined,
+    ...opts
+  }});
+  charts.push(c);
+};
+
+// ratio thinking/total
+mkChart('chart-ratio','bar',{
+  labels: keys.map(k=>AO[k]?.label||k),
+  datasets:[{
+    label:'% thinking',
+    data:keys.map(k=>PA[k].total_s>0?+((PA[k].thinking_s/PA[k].total_s)*100).toFixed(1):0),
+    backgroundColor:keys.map(col),borderRadius:4
+  }]
+},{plugins:{legend:{display:false}}});
+
+// avg per LLM call
+mkChart('chart-avg','bar',{
+  labels: keys.map(k=>AO[k]?.label||k),
+  datasets:[{
+    label:'s/appel LLM',
+    data:keys.map(k=>PA[k].llm_calls?+(PA[k].thinking_s/PA[k].llm_calls).toFixed(2):0),
+    backgroundColor:keys.map(col),borderRadius:4
+  }]
+},{plugins:{legend:{display:false}}});
+
+// LLM vs tool calls
+mkChart('chart-calls','bar',{
+  labels: keys.map(k=>AO[k]?.label||k),
+  datasets:[
+    {label:'Appels LLM', data:keys.map(k=>PA[k].llm_calls||0),  backgroundColor:'#7c3aed',borderRadius:4},
+    {label:'Appels outil',data:keys.map(k=>PA[k].tool_calls||0), backgroundColor:'#06b6d4',borderRadius:4}
+  ]
+},{});
+
+// Agent cards
+const ac = document.getElementById('agent-cards');
+keys.forEach(k => {
+  const t=PA[k], o=AO[k]||{}, s=o.structured||{}, c=col(k);
+  const tr = t.total_s>0?((t.thinking_s/t.total_s)*100).toFixed(0):0;
+  const tc = +tr>70?'#f59e0b':'#10b981';
+  const tb2= o.tool==='linkup'?'<span class="badge bl">Linkup</span>':'<span class="badge bt">Tavily</span>';
+  const kps=(s.key_points||[]).slice(0,4).map(p=>`<li>${p}</li>`).join('');
+  ac.innerHTML += `<div class="tcard">
+    <div class="tchead" style="border-top:3px solid ${c}">
+      <span class="dot" style="width:12px;height:12px;background:${c}"></span>
+      <h3>${o.label||k}</h3>${tb2}
+      <span class="badge" style="background:#1e1e2e;color:var(--muted)">${t.total_s}s</span>
+    </div>
+    <div class="tcbody">
+      <p class="summary">${s.executive_summary||'—'}</p>
+      <ul class="kps">${kps||'<li style="color:var(--muted)">—</li>'}</ul>
+      <div class="tmini">
+        <div class="tm"><span class="tv" style="color:#a78bfa">${t.thinking_s}s</span><span class="tl">Thinking</span></div>
+        <div class="tm"><span class="tv" style="color:#06b6d4">${t.search_s}s</span><span class="tl">Search</span></div>
+        <div class="tm"><span class="tv" style="color:var(--muted)">${t.llm_calls}·${t.tool_calls}</span><span class="tl">LLM·Tool</span></div>
+        <div class="tm"><span class="tv" style="color:${tc}">${tr}%</span><span class="tl">% thinking</span></div>
+      </div>
+    </div>
+  </div>`;
+});
+
+// ReAct steps
+const rs = document.getElementById('react-steps');
+keys.forEach(k => {
+  const t=PA[k], c=col(k), lbl=AO[k]?.label||k;
+  const n=t.llm_calls||1, m=t.tool_calls||0;
+  const al=t.thinking_s/n, at=m>0?t.search_s/m:0;
+  const maxD=t.total_s||1;
+  let html=`<div class="srow"><div class="alabel"><span class="dot" style="background:${c}"></span>${lbl}</div><div class="steps">`;
+  const tc2=Math.min(m,n-1);
+  const pw=d=>Math.max(38,+(d/maxD*260).toFixed(0))+'px';
+  html+=`<div class="sblk sllm" style="width:${pw(al)}" title="LLM ~${al.toFixed(2)}s">LLM ${al.toFixed(1)}s</div>`;
+  for(let i=0;i<tc2;i++){
+    html+=`<span class="sarrow">›</span>`;
+    html+=`<div class="sblk stool" style="width:${pw(at)}" title="Tool ~${at.toFixed(2)}s">🔍 ${at.toFixed(1)}s</div>`;
+    html+=`<span class="sarrow">›</span>`;
+    html+=`<div class="sblk sllm" style="width:${pw(al)}" title="LLM ~${al.toFixed(2)}s">LLM ${al.toFixed(1)}s</div>`;
+  }
+  html+=`<span class="smeta">${n} LLM · ${m} outil</span></div></div>`;
+  rs.innerHTML += html;
+});
+
+// Search table
+const sb = document.getElementById('stbody');
+keys.forEach(k => {
+  const t=PA[k], o=AO[k]||{}, c=col(k);
+  const tc=t.tool_calls||0, ss=t.search_s||0;
+  const avg=tc>0?(ss/tc).toFixed(2)+'s':'—';
+  const srcs=(o.structured?.sources||[]).length;
+  const rat=t.total_s>0?((ss/t.total_s)*100).toFixed(0):0;
+  const tb2=o.tool==='linkup'?'<span class="badge bl">Linkup</span>':'<span class="badge bt">Tavily</span>';
+  sb.innerHTML += `<tr>
+    <td><span class="alabel"><span class="dot" style="background:${c}"></span>${o.label||k}</span></td>
+    <td>${tb2}</td>
+    <td style="font-weight:700">${tc}</td>
+    <td><div class="mbar"><div class="mbtrack"><div class="mbfill" style="width:${(ss/maxSS*100).toFixed(0)}%;background:var(--search)"></div></div><span class="mbval">${ss.toFixed(2)}s</span></div></td>
+    <td>${avg}</td>
+    <td>${srcs}</td>
+    <td><div class="mbar"><div class="mbtrack"><div class="mbfill" style="width:${rat}%;background:var(--thinking)"></div></div><span class="mbval">${rat}%</span></div></td>
+  </tr>`;
+});
+
+// ④ Synthesis
+const cl=SY.confidence_level||{score:0,label:'?',rationale:''};
+const sc=parseInt(cl.score)||0;
+const cc=sc>=70?'#10b981':sc>=40?'#f59e0b':'#f43f5e';
+const circ=2*Math.PI*26, dash=(sc/100*circ).toFixed(1);
+document.getElementById('conf').innerHTML=`
+  <div class="cring"><svg width="68" height="68" viewBox="0 0 68 68">
+    <circle cx="34" cy="34" r="26" fill="none" stroke="#1e1e2e" stroke-width="8"/>
+    <circle cx="34" cy="34" r="26" fill="none" stroke="${cc}" stroke-width="8"
+      stroke-dasharray="${dash} ${circ.toFixed(1)}" stroke-linecap="round"/>
+  </svg><div class="cv" style="color:${cc}">${sc}%</div></div>
+  <div class="cinfo"><div class="cl" style="color:${cc}">${cl.label?.toUpperCase()||'—'}</div>
+  <div class="cr">${cl.rationale||'—'}</div></div>`;
+
+const kfe=document.getElementById('kfindings');
+(SY.key_findings||[]).forEach(kf=>{
+  const by=(kf.supported_by||[]).join(', ');
+  kfe.innerHTML+=`<div class="kfc">
+    <span class="kfbadge ${kf.confidence||'medium'}">${kf.confidence||'—'}</span>
+    <div><div class="kftxt">${kf.finding||kf}</div>${by?`<div class="kfby">Supporté par : ${by}</div>`:''}</div>
+  </div>`;
+});
+
+const ul=(id,items,cls)=>{
+  const el=document.getElementById(id);
+  el.innerHTML=items.length?items.map(x=>`<li class="${cls}">${x}</li>`).join(''):'<li style="color:var(--muted)">—</li>';
+};
+ul('consensus', SY.consensus||[], 'good');
+const ct=SY.contradictions?.length?SY.contradictions:SY.disagreements||[];
+ul('contradictions', ct, 'danger');
+ul('blindspots', SY.blind_spots||[], 'warn');
+
+const mc=SY.methodology_comparison||{};
+const mg=document.getElementById('mcomp');
+let mchtml='<div class="mcomp-grid">';
+keys.forEach(k=>{
+  const c=col(k), lbl=AO[k]?.label||k;
+  mchtml+=`<div class="mcc"><div class="mcl"><span class="dot" style="background:${c}"></span>${lbl}</div>
+    <div class="mcs">+ ${mc.strengths?.[k]||'—'}</div>
+    <div class="mcw">− ${mc.weaknesses?.[k]||'—'}</div></div>`;
+});
+mchtml+='</div>';
+if(mc.complementarity) mchtml+=`<p style="font-size:.79rem;color:var(--muted);margin-top:8px;font-style:italic">${mc.complementarity}</p>`;
+mg.innerHTML=mchtml;
+
+const re=document.getElementById('recs');
+(SY.recommended_further_research||[]).forEach(r=>{
+  re.innerHTML+=`<div class="rec"><div class="rtopic">🔭 ${r.topic||r}</div>${r.rationale?`<div class="rratio">${r.rationale}</div>`:''}</div>`;
+});
+
+document.getElementById('final').textContent = SY.final_synthesis||'—';
+</script>
+</body>
+</html>

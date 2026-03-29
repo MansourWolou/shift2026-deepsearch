@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Workflow Analysis Report</title>
+  <style>
+    :root {
+      --bg: #0e1116;
+      --card: #161b22;
+      --line: #2a3340;
+      --text: #e6edf3;
+      --muted: #9da7b3;
+      --ok: #1f9d55;
+      --warn: #d29922;
+      --bad: #da3633;
+      --accent: #2f81f7;
+      --accent2: #8957e5;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: radial-gradient(1200px 600px at 15% -10%, #1b2440 0%, var(--bg) 45%) no-repeat, var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
+    .title { margin: 0 0 6px; font-size: 28px; font-weight: 800; letter-spacing: .2px; }
+    .subtitle { margin: 0 0 16px; color: var(--muted); }
+    .panel, .card {
+      background: linear-gradient(180deg, #171d25 0%, var(--card) 100%);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+    }
+    .panel { padding: 14px; margin-bottom: 16px; }
+    .row { display: grid; gap: 12px; }
+    .row.cols-2 { grid-template-columns: 1fr 1fr; }
+    .row.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    @media (max-width: 980px) {
+      .row.cols-2, .row.cols-3 { grid-template-columns: 1fr; }
+    }
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    textarea {
+      width: 100%;
+      min-height: 160px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #0f141b;
+      color: var(--text);
+      padding: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      resize: vertical;
+    }
+    input[type="file"] {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #0f141b;
+      color: var(--muted);
+      padding: 9px;
+    }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      color: white;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      cursor: pointer;
+      font-weight: 700;
+    }
+    button.secondary {
+      background: #283341;
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+    .hint { color: var(--muted); font-size: 13px; margin-top: 8px; }
+    .kpi {
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: #10161d;
+    }
+    .kpi .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+    .kpi .v { font-size: 24px; font-weight: 800; margin-top: 2px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .card { padding: 14px; grid-column: span 12; }
+    .card h3 { margin: 0 0 10px; font-size: 16px; }
+    .muted { color: var(--muted); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+    }
+    th, td {
+      padding: 9px 10px;
+      border-bottom: 1px solid #1f2732;
+      text-align: left;
+      vertical-align: top;
+      font-size: 14px;
+    }
+    th { color: var(--muted); font-weight: 700; background: #111821; }
+    tr:last-child td { border-bottom: 0; }
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 9px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid transparent;
+    }
+    .ok { background: #0f2e1f; color: #67e8a1; border-color: #1f9d55; }
+    .warn { background: #33250d; color: #ffd788; border-color: #d29922; }
+    .bad { background: #3a1110; color: #ff9d9a; border-color: #da3633; }
+    .bar {
+      width: 100%;
+      height: 12px;
+      border-radius: 999px;
+      background: #0f141b;
+      border: 1px solid var(--line);
+      overflow: hidden;
+      display: flex;
+    }
+    .seg-thinking { background: #2f81f7; }
+    .seg-search { background: #1f9d55; }
+    .seg-other { background: #4b5563; }
+    .step {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      background: #10161d;
+      margin-bottom: 8px;
+    }
+    .error-list {
+      white-space: pre-wrap;
+      border: 1px solid #4a1f1f;
+      background: #2a1212;
+      color: #ffb7b5;
+      border-radius: 10px;
+      padding: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1 class="title">Analyse Workflow Multi-Agents</h1>
+    <p class="subtitle">Temps de traitement, pertinence du thinking, comparaison des recherches et decoupage des etapes.</p>
+
+    <div class="panel">
+      <div class="row cols-2">
+        <div>
+          <label for="jsonFile">Charger un JSON de sortie workflow</label>
+          <input id="jsonFile" type="file" accept=".json,application/json" />
+        </div>
+        <div>
+          <label for="jsonInput">Ou coller le JSON</label>
+          <textarea id="jsonInput" placeholder='{"query":"...","meta":...}'></textarea>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="analyzeBtn">Analyser</button>
+        <button class="secondary" id="clearBtn">Vider</button>
+      </div>
+      <div class="hint">Format attendu: sortie de <code>workflow_agent.py</code> avec <code>meta.timing.per_agent</code>, <code>agent_outputs</code> et <code>synthesis</code>.</div>
+    </div>
+
+    <div id="report" style="display:none;">
+      <div class="row cols-3" id="kpis"></div>
+
+      <div class="grid">
+        <section class="card" id="stepsCard">
+          <h3>Presentation / Decoupage des etapes</h3>
+          <div id="steps"></div>
+        </section>
+
+        <section class="card" id="timingCard">
+          <h3>Temps de traitement des searchs</h3>
+          <div id="timingTable"></div>
+        </section>
+
+        <section class="card" id="thinkingCard">
+          <h3>Pertinence du thinking (heuristique)</h3>
+          <div id="thinkingTable"></div>
+        </section>
+
+        <section class="card" id="searchCompareCard">
+          <h3>Comparaison des recherches (par outil)</h3>
+          <div id="searchCompare"></div>
+        </section>
+
+        <section class="card" id="errorsCard">
+          <h3>Erreurs detectees</h3>
+          <div id="errors"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function fmtSec(n) {
+      const v = Number(n || 0);
+      return Number.isFinite(v) ? v.toFixed(3) + " s" : "-";
+    }
+
+    function fmtPct(n) {
+      const v = Number(n || 0);
+      return Number.isFinite(v) ? (v * 100).toFixed(1) + "%" : "-";
+    }
+
+    function esc(s) {
+      return String(s ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
+
+    function clamp(v, a, b) {
+      return Math.max(a, Math.min(b, v));
+    }
+
+    function statusBadge(ok, labelOk = "OK", labelFail = "KO") {
+      return ok
+        ? `<span class="badge ok">${labelOk}</span>`
+        : `<span class="badge bad">${labelFail}</span>`;
+    }
+
+    function thinkingScore(agent) {
+      const hasError = agent.error;
+      const kp = agent.keyPoints;
+      const src = agent.sources;
+      const asmp = agent.assumptions;
+      const unc = agent.uncertainties;
+      const llmCalls = agent.llmCalls;
+      const toolCalls = agent.toolCalls;
+      const thinkingRatio = agent.totalS > 0 ? agent.thinkingS / agent.totalS : 0;
+      const searchRatio = agent.totalS > 0 ? agent.searchS / agent.totalS : 0;
+
+      let score = 20;
+      if (!hasError) score += 20;
+      score += Math.min(24, kp * 8);
+      score += Math.min(24, src * 12);
+      score += Math.min(8, asmp * 4);
+      score += Math.min(8, unc * 4);
+      if (llmCalls > 0) score += 6;
+      if (toolCalls > 0 && searchRatio > 0.01) score += 8;
+      score += Math.min(10, thinkingRatio * 20);
+      if (hasError) score -= 55;
+      if (llmCalls === 0) score -= 20;
+
+      score = clamp(score, 0, 100);
+      const label = score >= 75 ? "high" : score >= 45 ? "medium" : "low";
+      return { score, label };
+    }
+
+    function collectAgents(data) {
+      const outputs = data?.agent_outputs || {};
+      const metaPer = data?.meta?.timing?.per_agent || {};
+      return Object.entries(outputs).map(([key, out]) => {
+        const t = out?.timing || metaPer[key] || {};
+        const st = out?.structured || {};
+        const raw = String(out?.raw || "");
+        const totalS = Number(t.total_s || 0);
+        const thinkingS = Number(t.thinking_s || 0);
+        const searchS = Number(t.search_s || 0);
+        const otherS = Number(t.other_s ?? Math.max(0, totalS - thinkingS - searchS));
+        const llmCalls = Number(t.llm_calls || 0);
+        const toolCalls = Number(t.tool_calls || 0);
+        const keyPoints = Array.isArray(st.key_points) ? st.key_points.length : 0;
+        const sources = Array.isArray(st.sources) ? st.sources.length : 0;
+        const assumptions = Array.isArray(st.assumptions) ? st.assumptions.length : 0;
+        const uncertainties = Array.isArray(st.uncertainties) ? st.uncertainties.length : 0;
+        const error = /erreur agent|unexpected keyword argument|error/i.test(raw);
+        const scoreObj = thinkingScore({
+          error, keyPoints, sources, assumptions, uncertainties,
+          llmCalls, toolCalls, totalS, thinkingS, searchS
+        });
+        return {
+          key,
+          label: out?.label || key,
+          tool: out?.tool || "unknown",
+          error,
+          raw,
+          totalS,
+          thinkingS,
+          searchS,
+          otherS,
+          llmCalls,
+          toolCalls,
+          keyPoints,
+          sources,
+          assumptions,
+          uncertainties,
+          thinkingScore: scoreObj.score,
+          thinkingLabel: scoreObj.label
+        };
+      });
+    }
+
+    function renderKpis(data, agents) {
+      const total = Number(data?.meta?.timing?.total_s || 0);
+      const synth = Number(data?.meta?.timing?.synthesis_s || 0);
+      const okCount = agents.filter(a => !a.error).length;
+      const avgThinkingScore = agents.length
+        ? agents.reduce((acc, a) => acc + a.thinkingScore, 0) / agents.length
+        : 0;
+      const totalSearchCalls = agents.reduce((acc, a) => acc + a.toolCalls, 0);
+      const totalLlmCalls = agents.reduce((acc, a) => acc + a.llmCalls, 0);
+      const html = `
+        <div class="kpi"><div class="k">Query</div><div class="v" style="font-size:16px">${esc(data?.query || "-")}</div></div>
+        <div class="kpi"><div class="k">Temps total workflow</div><div class="v">${fmtSec(total)}</div></div>
+        <div class="kpi"><div class="k">Temps synthese</div><div class="v">${fmtSec(synth)}</div></div>
+        <div class="kpi"><div class="k">Agents OK</div><div class="v">${okCount}/${agents.length}</div></div>
+        <div class="kpi"><div class="k">Pertinence thinking moyenne</div><div class="v">${avgThinkingScore.toFixed(1)}/100</div></div>
+        <div class="kpi"><div class="k">Calls (LLM / Search)</div><div class="v">${totalLlmCalls} / ${totalSearchCalls}</div></div>
+      `;
+      $("kpis").innerHTML = html;
+    }
+
+    function renderSteps(data, agents) {
+      const total = Number(data?.meta?.timing?.total_s || 0);
+      const synth = Number(data?.meta?.timing?.synthesis_s || 0);
+      const maxResearch = agents.length ? Math.max(...agents.map(a => a.totalS)) : 0;
+      const sumResearch = agents.reduce((acc, a) => acc + a.totalS, 0);
+      const overhead = Math.max(0, total - maxResearch - synth);
+
+      const stepsHtml = `
+        <div class="step"><b>Etape 1 - Router fan-out</b><br><span class="muted">Distribution de la requete vers ${agents.length} agents en parallele.</span></div>
+        <div class="step"><b>Etape 2 - Search/Reasoning parallelise</b><br>
+          Mur parallelise: <b>${fmtSec(maxResearch)}</b> | cumul non parallelise theorique: <b>${fmtSec(sumResearch)}</b>.
+        </div>
+        <div class="step"><b>Etape 3 - Fan-in</b><br><span class="muted">Aggregation des sorties de recherche vers un seul contexte de synthese.</span></div>
+        <div class="step"><b>Etape 4 - Synthese</b><br>Durree mesuree: <b>${fmtSec(synth)}</b>.</div>
+        <div class="step"><b>Etape 5 - Serialisation resultat</b><br>Overhead calcule: <b>${fmtSec(overhead)}</b>.</div>
+      `;
+      $("steps").innerHTML = stepsHtml;
+    }
+
+    function renderTimingTable(agents) {
+      const rows = agents.map(a => {
+        const total = a.totalS || 1e-9;
+        const pThink = clamp(a.thinkingS / total, 0, 1) * 100;
+        const pSearch = clamp(a.searchS / total, 0, 1) * 100;
+        const pOther = clamp(1 - (pThink + pSearch) / 100, 0, 1) * 100;
+        const bar = `
+          <div class="bar">
+            <div class="seg-thinking" style="width:${pThink}%"></div>
+            <div class="seg-search" style="width:${pSearch}%"></div>
+            <div class="seg-other" style="width:${pOther}%"></div>
+          </div>`;
+        return `<tr>
+          <td>${esc(a.label)}</td>
+          <td>${esc(a.tool)}</td>
+          <td>${fmtSec(a.totalS)}</td>
+          <td>${fmtSec(a.thinkingS)}</td>
+          <td>${fmtSec(a.searchS)}</td>
+          <td>${a.llmCalls}</td>
+          <td>${a.toolCalls}</td>
+          <td>${bar}</td>
+        </tr>`;
+      }).join("");
+      $("timingTable").innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Agent</th><th>Tool</th><th>Total</th><th>Thinking</th><th>Search</th><th>LLM calls</th><th>Tool calls</th><th>Repartition</th>
+            </tr>
+          </thead>
+          <tbody>${rows || "<tr><td colspan='8'>Aucune donnee agent.</td></tr>"}</tbody>
+        </table>
+        <p class="hint">Bleu = thinking, vert = search, gris = overhead/attente/autre.</p>
+      `;
+    }
+
+    function renderThinkingTable(agents) {
+      const rows = agents
+        .sort((a, b) => b.thinkingScore - a.thinkingScore)
+        .map(a => {
+          const badge = a.thinkingLabel === "high"
+            ? `<span class="badge ok">high</span>`
+            : a.thinkingLabel === "medium"
+              ? `<span class="badge warn">medium</span>`
+              : `<span class="badge bad">low</span>`;
+          return `<tr>
+            <td>${esc(a.label)}</td>
+            <td>${badge}</td>
+            <td>${a.thinkingScore.toFixed(1)}</td>
+            <td>${a.keyPoints}</td>
+            <td>${a.sources}</td>
+            <td>${a.assumptions}</td>
+            <td>${a.uncertainties}</td>
+            <td>${statusBadge(!a.error)}</td>
+          </tr>`;
+        }).join("");
+      $("thinkingTable").innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Agent</th><th>Niveau</th><th>Score /100</th><th>Key points</th><th>Sources</th><th>Assumptions</th><th>Uncertainties</th><th>Etat</th>
+            </tr>
+          </thead>
+          <tbody>${rows || "<tr><td colspan='8'>Aucune donnee.</td></tr>"}</tbody>
+        </table>
+        <p class="hint">Score heuristique base sur qualite structuree + execution (calls, search, erreurs).</p>
+      `;
+    }
+
+    function renderSearchComparison(agents) {
+      const grouped = {};
+      for (const a of agents) {
+        if (!grouped[a.tool]) grouped[a.tool] = [];
+        grouped[a.tool].push(a);
+      }
+      const rows = Object.entries(grouped).map(([tool, list]) => {
+        const n = list.length;
+        const ok = list.filter(a => !a.error).length;
+        const avgSearch = list.reduce((acc, a) => acc + a.searchS, 0) / n;
+        const avgThinking = list.reduce((acc, a) => acc + a.thinkingS, 0) / n;
+        const avgSources = list.reduce((acc, a) => acc + a.sources, 0) / n;
+        const avgScore = list.reduce((acc, a) => acc + a.thinkingScore, 0) / n;
+        return `<tr>
+          <td>${esc(tool)}</td>
+          <td>${n}</td>
+          <td>${ok}/${n} (${((ok / n) * 100).toFixed(1)}%)</td>
+          <td>${fmtSec(avgSearch)}</td>
+          <td>${fmtSec(avgThinking)}</td>
+          <td>${avgSources.toFixed(2)}</td>
+          <td>${avgScore.toFixed(1)}</td>
+        </tr>`;
+      }).join("");
+      $("searchCompare").innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Tool</th><th>Agents</th><th>Success rate</th><th>Avg search time</th><th>Avg thinking time</th><th>Avg sources</th><th>Avg thinking score</th>
+            </tr>
+          </thead>
+          <tbody>${rows || "<tr><td colspan='7'>Aucune donnee outil.</td></tr>"}</tbody>
+        </table>
+      `;
+    }
+
+    function renderErrors(agents, data) {
+      const items = [];
+      for (const a of agents) {
+        if (a.error) {
+          items.push(`[${a.label}] ${a.raw}`);
+        }
+      }
+      const synth = data?.synthesis?.final_synthesis || "";
+      if (/erreur|error/i.test(String(synth))) {
+        items.push(`[synthesis] ${synth}`);
+      }
+      if (!items.length) {
+        $("errors").innerHTML = `<span class="badge ok">Aucune erreur detectee</span>`;
+        return;
+      }
+      $("errors").innerHTML = `<div class="error-list">${esc(items.join("\n\n"))}</div>`;
+    }
+
+    function analyzeObject(data) {
+      const agents = collectAgents(data);
+      if (!agents.length) throw new Error("agent_outputs vide ou absent.");
+      renderKpis(data, agents);
+      renderSteps(data, agents);
+      renderTimingTable(agents);
+      renderThinkingTable(agents);
+      renderSearchComparison(agents);
+      renderErrors(agents, data);
+      $("report").style.display = "block";
+    }
+
+    function parseFromTextarea() {
+      const raw = $("jsonInput").value.trim();
+      if (!raw) throw new Error("Colle un JSON ou charge un fichier.");
+      return JSON.parse(raw);
+    }
+
+    $("jsonFile").addEventListener("change", async (ev) => {
+      const file = ev.target.files?.[0];
+      if (!file) return;
+      const text = await file.text();
+      $("jsonInput").value = text;
+    });
+
+    $("analyzeBtn").addEventListener("click", () => {
+      try {
+        const data = parseFromTextarea();
+        analyzeObject(data);
+      } catch (err) {
+        alert("Analyse impossible: " + (err?.message || err));
+      }
+    });
+
+    $("clearBtn").addEventListener("click", () => {
+      $("jsonInput").value = "";
+      $("jsonFile").value = "";
+      $("report").style.display = "none";
+      $("kpis").innerHTML = "";
+      $("steps").innerHTML = "";
+      $("timingTable").innerHTML = "";
+      $("thinkingTable").innerHTML = "";
+      $("searchCompare").innerHTML = "";
+      $("errors").innerHTML = "";
+    });
+  </script>
+</body>
+</html>

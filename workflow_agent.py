@@ -83,9 +83,9 @@ TAVILY_API_KEY    = os.getenv("TAVILY_API_KEY", "")
 LINKUP_API_KEY    = os.getenv("LINKUP_API_KEY", "")
 
 # OpenRouter model IDs (agents de recherche)
-MODEL_LLAMA_8B = "meta-llama/llama-3.1-8b-instruct"
-MODEL_QWEN_7B  = os.getenv("QWEN_MODEL",    "qwen/qwen-2.5-7b-instruct")
-MODEL_LLAMA_3B = os.getenv("LLAMA32_MODEL", "meta-llama/llama-3.2-3b-instruct")
+MODEL_LLAMA_8B      = "meta-llama/llama-3.1-8b-instruct"
+MODEL_QWEN_7B       = os.getenv("QWEN_MODEL",         "qwen/qwen-2.5-7b-instruct")
+MODEL_MISTRAL_NEMO  = os.getenv("MISTRAL_NEMO_MODEL",  "mistralai/mistral-nemo")
 
 # Claude direct via Anthropic API (synthétiseur)
 MODEL_CLAUDE   = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
@@ -127,14 +127,14 @@ AGENT_CONFIGS: list[dict] = [
         "backstory":      "Expert en analyse systémique. Tu cartographies les problèmes de façon exhaustive.",
     },
     {
-        "key":            "llama_3b",
-        "label":          "Llama 3.2 3B",
-        "model":          MODEL_LLAMA_3B,
+        "key":            "mistral_nemo",
+        "label":          "Mistral NeMo 12B",
+        "model":          MODEL_MISTRAL_NEMO,
         "provider_order": [],
-        "temperature":    0.1,
+        "temperature":    0.2,
         "search_tool":    "tavily",
-        "directive":      "Approche ultra-concise : chaque point clé en une phrase dense, priorité à l'actionabilité.",
-        "backstory":      "Spécialiste en communication d'élite. Aucun mot inutile. Chaque phrase apporte une valeur unique.",
+        "directive":      "Approche nuancée et multilingue : contextualise chaque fait, relie les implications pratiques et théoriques.",
+        "backstory":      "Analyste polyvalent avec forte capacité de raisonnement. Tu articules les faits avec leurs implications et leur contexte élargi.",
     },
     {
         "key":            "linkup_agent",
@@ -1137,7 +1137,7 @@ footer{{text-align:center;padding:20px;font-size:.76rem;color:var(--muted);borde
 const D = {data_json};
 const COLORS = {{
   cerebras_8b:'#06b6d4',groq_8b:'#f59e0b',qwen_7b:'#10b981',
-  llama_3b:'#f43f5e',linkup_agent:'#8b5cf6'
+  mistral_nemo:'#f43f5e',linkup_agent:'#8b5cf6'
 }};
 const col = k => COLORS[k]||'#7c3aed';
 const fmt = n => typeof n==='number'?n.toFixed(2)+'s':n;
@@ -1378,7 +1378,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--query",
-        default="le venezuela est un etat des usa",
+        default="l'afganistant à envahi les usa parcequ'il possède la bombe atomique",
         help="Requête DeepSearch",
     )
     parser.add_argument("--output",    default=None,        help="Fichier de sortie JSON")
