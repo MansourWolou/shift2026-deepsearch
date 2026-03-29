@@ -75,6 +75,59 @@ def extract_json(text: str) -> dict | None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Pre-screening — la claim est-elle fact-checkable ?
+# ──────────────────────────────────────────────────────────────────────────────
+
+SCREENING_PROMPT_TPL = """Tu es un filtre de pré-analyse pour un moteur de fact-checking.
+
+On te donne une phrase. Tu dois déterminer si c'est une AFFIRMATION FACTUELLE VÉRIFIABLE.
+
+Réponds UNIQUEMENT avec un JSON valide, rien d'autre :
+{{
+  "checkable": true/false,
+  "category": "factual" | "opinion" | "idiom" | "question" | "vague" | "subjective" | "future",
+  "reason": "Explication courte en 1 phrase"
+}}
+
+Règles :
+- "factual" = affirmation sur un fait mesurable/daté/vérifiable → checkable=true
+- "opinion" = jugement de valeur, goût, préférence → checkable=false
+- "idiom" = expression idiomatique, proverbe, métaphore → checkable=false
+- "question" = question, pas une affirmation → checkable=false
+- "vague" = trop flou pour vérifier (pas de sujet concret) → checkable=false
+- "subjective" = dépend du point de vue, pas de réponse objective → checkable=false
+- "future" = prédiction sur le futur, pas vérifiable maintenant → checkable=false
+
+Exemples :
+- "Macron a été élu en 2017" → factual, checkable=true
+- "Le verre est à moitié plein" → idiom, checkable=false
+- "Python est le meilleur langage" → opinion, checkable=false
+- "Il va pleuvoir demain" → future, checkable=false
+- "La tour Eiffel mesure 330m" → factual, checkable=true
+
+PHRASE : {claim}"""
+
+
+def prescreen_claim(claim: str) -> dict:
+    """Quick check: is this claim fact-checkable? Uses a fast/cheap model."""
+    llm = ChatOpenAI(
+        model="google/gemini-2.5-flash",
+        temperature=0.0,
+        api_key=OPENROUTER_API_KEY,
+        base_url=OPENROUTER_BASE_URL,
+    )
+    response = llm.invoke([HumanMessage(content=SCREENING_PROMPT_TPL.format(claim=claim))])
+    content = response.content
+    if isinstance(content, list):
+        content = "".join(c["text"] if isinstance(c, dict) else str(c) for c in content)
+
+    parsed = extract_json(content)
+    if parsed:
+        return parsed
+    return {"checkable": True, "category": "unknown", "reason": "Parsing failed, proceeding anyway"}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Linkup Search
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -433,6 +486,7 @@ def factcheck(
     verbose: bool = False,
     max_workers: int | None = None,
     search_depth: str = "deep",
+    skip_screening: bool = False,
 ) -> dict:
     query = normalize_query(query)
     if agents is None:
@@ -453,8 +507,61 @@ def factcheck(
 
     t_total = time.perf_counter()
 
+    # Phase 0 — Pre-screening
+    screening = None
+    if not skip_screening:
+        console.print("\n[bold yellow]Pre-screening…[/bold yellow]")
+        t_screen = time.perf_counter()
+        screening = prescreen_claim(query)
+        screen_duration = time.perf_counter() - t_screen
+        log.info("Pre-screening: %s (%.1fs)", screening, screen_duration)
+
+        if not screening.get("checkable", True):
+            category = screening.get("category", "unknown")
+            reason = screening.get("reason", "")
+            console.print(
+                f"[yellow]⚠ Claim non fact-checkable ({category})[/yellow]\n"
+                f"[dim]{reason}[/dim]\n"
+            )
+            total_duration = time.perf_counter() - t_total
+            return {
+                "query": query,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "config": {
+                    "research_agents": agents,
+                    "synthesis_model": synthesis_model,
+                },
+                "screening": screening,
+                "timing": {
+                    "total_s": round(total_duration, 2),
+                    "screening_s": round(screen_duration, 2),
+                    "search_s": 0,
+                    "analysis_s": 0,
+                    "synthesis_s": 0,
+                    "per_agent": {},
+                },
+                "verdict": {
+                    "claim": query,
+                    "verdict": "NOT_CHECKABLE",
+                    "confidence": 0,
+                    "summary": reason,
+                    "category": category,
+                    "evidence_for": [],
+                    "evidence_against": [],
+                    "consensus": [],
+                    "disagreements": [],
+                    "blind_spots": [],
+                    "nuances": [],
+                },
+            }
+
+        console.print(
+            f"[green]✓ Claim fact-checkable ({screening.get('category', '')})[/green] "
+            f"({screen_duration:.1f}s)\n"
+        )
+
     # Phase 1 — Recherche Linkup
-    console.print(f"\n[bold blue]Recherche Linkup ({search_depth})…[/bold blue]")
+    console.print(f"[bold blue]Recherche Linkup ({search_depth})…[/bold blue]")
     t_search = time.perf_counter()
     search_results = linkup_search(query, depth=search_depth)
     search_duration = time.perf_counter() - t_search
@@ -494,6 +601,9 @@ def factcheck(
         "verdict": verdict,
     }
 
+    if screening:
+        output["screening"] = screening
+
     if verbose:
         output["search_results"] = search_results
         output["raw_analysis"] = {
@@ -514,6 +624,7 @@ VERDICT_COLORS = {
     "PARTIALLY TRUE": "yellow",
     "UNVERIFIABLE": "dim",
     "MISLEADING": "red",
+    "NOT_CHECKABLE": "yellow",
 }
 
 
@@ -939,6 +1050,11 @@ def main():
     )
     parser.add_argument("--no-pretty", action="store_true", help="Compact JSON output")
     parser.add_argument(
+        "--no-screen",
+        action="store_true",
+        help="Skip pre-screening (force full pipeline even for non-factual claims)",
+    )
+    parser.add_argument(
         "--log-level",
         default="warning",
         choices=["debug", "info", "warning", "error"],
@@ -973,6 +1089,7 @@ def main():
         verbose=args.verbose,
         max_workers=config["max_workers"],
         search_depth=config["search_depth"],
+        skip_screening=args.no_screen,
     )
 
     display_verdict(output)
