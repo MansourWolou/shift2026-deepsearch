@@ -56,6 +56,7 @@ from dotenv import load_dotenv
 
 # ── LangChain / LangGraph ──────────────────────────────────────────────────────
 from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain_tavily import TavilySearch
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.tools import tool as lc_tool
@@ -77,14 +78,17 @@ OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "https://github.com/shift
 OPENROUTER_APP_NAME = os.getenv("OPENROUTER_APP_NAME", "DeepSearch Workflow")
 MAX_TOKENS          = int(os.getenv("OPENROUTER_MAX_TOKENS", "1200"))
 
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
-LINKUP_API_KEY = os.getenv("LINKUP_API_KEY", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+TAVILY_API_KEY    = os.getenv("TAVILY_API_KEY", "")
+LINKUP_API_KEY    = os.getenv("LINKUP_API_KEY", "")
 
-# OpenRouter model IDs
+# OpenRouter model IDs (agents de recherche)
 MODEL_LLAMA_8B = "meta-llama/llama-3.1-8b-instruct"
 MODEL_QWEN_7B  = os.getenv("QWEN_MODEL",    "qwen/qwen-2.5-7b-instruct")
 MODEL_LLAMA_3B = os.getenv("LLAMA32_MODEL", "meta-llama/llama-3.2-3b-instruct")
-MODEL_CLAUDE   = "anthropic/claude-sonnet-4-5"
+
+# Claude direct via Anthropic API (synthétiseur)
+MODEL_CLAUDE   = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -310,8 +314,23 @@ def make_llm(
         api_key=OPENROUTER_API_KEY,
         base_url=OPENROUTER_BASE_URL,
         default_headers=_or_headers(),
-        # OpenRouter custom routing fields must go into extra_body with current langchain-openai/openai.
         extra_body=_provider_body(provider_order),
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+
+def make_claude_llm(
+    model: str = MODEL_CLAUDE,
+    temperature: float = 0.15,
+    max_tokens: int = 3500,
+) -> ChatAnthropic:
+    """LLM Claude via l'API Anthropic directe (pas OpenRouter)."""
+    if not ANTHROPIC_API_KEY:
+        raise ValueError("ANTHROPIC_API_KEY manquant dans .env")
+    return ChatAnthropic(
+        model=model,
+        api_key=ANTHROPIC_API_KEY,
         temperature=temperature,
         max_tokens=max_tokens,
     )
@@ -740,7 +759,7 @@ def synthesizer(state: WorkflowState) -> dict:
     query     = state["query"]
     agent_keys = [r["key"] for r in results]
 
-    print(f"\n[Workflow] Synthèse Claude sur {len(results)} outputs...", file=sys.stderr)
+    print(f"\n[Workflow] Synthèse Claude ({MODEL_CLAUDE} via Anthropic) sur {len(results)} outputs...", file=sys.stderr)
     t0 = time.perf_counter()
 
     # Contexte pour Claude
@@ -758,7 +777,7 @@ def synthesizer(state: WorkflowState) -> dict:
     ranking      = json.dumps(agent_keys)
 
     try:
-        llm = make_llm(MODEL_CLAUDE, [], temperature=0.15, max_tokens=3500)
+        llm = make_claude_llm()
         response = llm.invoke([
             SystemMessage(content=_SYNTHESIS_SYSTEM),
             HumanMessage(content=_SYNTHESIS_HUMAN.format(
