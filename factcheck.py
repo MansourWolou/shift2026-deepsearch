@@ -515,11 +515,40 @@ identify agreements and contradictions, evaluate source quality,
 and produce your fact-check verdict as JSON."""
 
 
-def synthesize_verdict(
-    query: str,
-    research_results: dict[str, dict],
-    model: str = "google/gemini-2.5-flash",
-) -> dict:
+# Thinking models pour la synthese multi-agent
+THINK_REGISTRY: dict[str, dict] = {
+    "gemini-flash": {
+        "label": "Gemini 2.5 Flash",
+        "model": "google/gemini-2.5-flash",
+    },
+    "o4-mini": {
+        "label": "o4-mini",
+        "model": "openai/o4-mini",
+    },
+    "claude": {
+        "label": "Claude Sonnet 4.6",
+        "model": "anthropic/claude-sonnet-4-6",
+    },
+    "gemini-pro": {
+        "label": "Gemini 2.5 Pro",
+        "model": "google/gemini-2.5-pro",
+    },
+    "gpt": {
+        "label": "GPT-5.4",
+        "model": "openai/gpt-5.4",
+    },
+}
+
+THINK_PRESETS: dict[int, list[str]] = {
+    1: ["gemini-flash"],
+    2: ["gemini-flash", "o4-mini"],
+    3: ["gemini-flash", "o4-mini", "claude"],
+    5: ["gemini-flash", "o4-mini", "claude", "gemini-pro", "gpt"],
+}
+
+
+def _build_synthesis_messages(query: str, research_results: dict[str, dict]) -> list:
+    """Build the messages for a synthesis call (shared by single and multi)."""
     reports = []
     for name, data in research_results.items():
         role = data.get("role", "generic")
@@ -541,13 +570,7 @@ def synthesize_verdict(
     agent_reports = "\n\n".join(reports)
     n_agents = len(research_results)
 
-    llm = ChatOpenAI(
-        model=model,
-        api_key=OPENROUTER_API_KEY,
-        base_url=OPENROUTER_BASE_URL,
-    )
-
-    messages = [
+    return [
         SystemMessage(
             content=SYNTHESIS_SYSTEM_PROMPT.format(
                 n_agents=n_agents,
@@ -563,11 +586,16 @@ def synthesize_verdict(
         ),
     ]
 
-    console.print("\n[bold magenta]Synthèse en cours…[/bold magenta] " f"({model})\n")
 
+def _call_synthesis(model: str, messages: list) -> dict:
+    """Call a single synthesis model and return parsed verdict."""
+    llm = ChatOpenAI(
+        model=model,
+        api_key=OPENROUTER_API_KEY,
+        base_url=OPENROUTER_BASE_URL,
+    )
     response = llm.invoke(messages)
     content = response.content
-
     if isinstance(content, list):
         content = next(
             (
@@ -577,17 +605,180 @@ def synthesize_verdict(
             ),
             str(content),
         )
-
     parsed = extract_json(content)
     if parsed:
         return parsed
+    return {
+        "verdict": "UNVERIFIABLE",
+        "confidence": 0.0,
+        "summary": "JSON invalide.",
+        "raw_response": content[:2000],
+    }
+
+
+def synthesize_verdict(
+    query: str,
+    research_results: dict[str, dict],
+    model: str = "google/gemini-2.5-flash",
+) -> dict:
+    """Single-model synthesis (--think 1 or default)."""
+    messages = _build_synthesis_messages(query, research_results)
+
+    console.print("\n[bold magenta]Synthèse en cours…[/bold magenta] " f"({model})\n")
+
+    verdict = _call_synthesis(model, messages)
+    if "claim" not in verdict:
+        verdict["claim"] = query
+    return verdict
+
+
+def synthesize_multi(
+    query: str,
+    research_results: dict[str, dict],
+    think_models: list[str],
+) -> dict:
+    """Multi-model synthesis: N thinking models vote in parallel, then aggregate."""
+    messages = _build_synthesis_messages(query, research_results)
+    n = len(think_models)
+
+    labels = [THINK_REGISTRY[k]["label"] for k in think_models]
+    console.print(
+        f"\n[bold magenta]Synthèse multi-think ({n} modèles)…[/bold magenta] "
+        f"[dim]{', '.join(labels)}[/dim]\n"
+    )
+
+    verdicts: dict[str, dict] = {}
+    timings: dict[str, float] = {}
+
+    def _run_think(key: str) -> tuple[str, dict, float]:
+        t0 = time.perf_counter()
+        model = THINK_REGISTRY[key]["model"]
+        result = _call_synthesis(model, messages)
+        dt = time.perf_counter() - t0
+        log.info("[think:%s] done in %.1fs → %s", key, dt, result.get("verdict", "?"))
+        return key, result, dt
+
+    status_map: dict[str, str] = {k: "[yellow]en cours…[/yellow]" for k in think_models}
+
+    def _build_table() -> Table:
+        table = Table(title="Synthèse multi-think", show_header=True, header_style="bold magenta")
+        table.add_column("Thinker", style="bold")
+        table.add_column("Statut")
+        table.add_column("Verdict")
+        table.add_column("Confiance", justify="right")
+        table.add_column("Durée", justify="right")
+        for k in think_models:
+            if k in verdicts:
+                v = verdicts[k]
+                vtext = v.get("verdict", "?")
+                color = VERDICT_COLORS.get(vtext, "white")
+                conf = v.get("confidence", 0)
+                conf_str = f"{conf:.0%}" if isinstance(conf, int | float) and conf else ""
+                dur_str = f"{timings[k]:.1f}s"
+                table.add_row(
+                    THINK_REGISTRY[k]["label"],
+                    status_map[k],
+                    f"[{color}]{vtext}[/{color}]",
+                    conf_str,
+                    dur_str,
+                )
+            else:
+                table.add_row(THINK_REGISTRY[k]["label"], status_map[k], "", "", "…")
+        return table
+
+    with (
+        Live(_build_table(), console=console, refresh_per_second=2) as live,
+        ThreadPoolExecutor(max_workers=n) as pool,
+    ):
+        futures = {pool.submit(_run_think, k): k for k in think_models}
+        for future in as_completed(futures):
+            key, result, dt = future.result()
+            verdicts[key] = result
+            timings[key] = round(dt, 2)
+            status_map[key] = "[green]terminé[/green]"
+            live.update(_build_table())
+
+    # Aggregate: majority vote on verdict, average confidence, merge evidence
+    verdict_counts: dict[str, int] = {}
+    total_conf = 0.0
+    conf_count = 0
+    all_evidence_for = []
+    all_evidence_against = []
+    all_nuances = []
+
+    for v in verdicts.values():
+        vt = v.get("verdict", "UNVERIFIABLE")
+        verdict_counts[vt] = verdict_counts.get(vt, 0) + 1
+        c = v.get("confidence", 0)
+        if isinstance(c, int | float) and c:
+            total_conf += c
+            conf_count += 1
+        all_evidence_for.extend(v.get("evidence_for", []))
+        all_evidence_against.extend(v.get("evidence_against", []))
+        all_nuances.extend(v.get("nuances", []))
+
+    # Winner = most votes, tie-break by first in VERDICT order
+    verdict_order = ["TRUE", "FALSE", "PARTIALLY TRUE", "MISLEADING", "UNVERIFIABLE"]
+    winner = max(
+        verdict_counts,
+        key=lambda vt: (verdict_counts[vt], -verdict_order.index(vt) if vt in verdict_order else 0),
+    )
+    avg_conf = total_conf / conf_count if conf_count else 0
+
+    # Deduplicate evidence (by point text)
+    def _dedup(items: list) -> list:
+        seen = set()
+        out = []
+        for item in items:
+            key = item.get("point", item) if isinstance(item, dict) else item
+            if key not in seen:
+                seen.add(key)
+                out.append(item)
+        return out
+
+    # Build think consensus detail
+    think_detail = []
+    for k in think_models:
+        v = verdicts[k]
+        think_detail.append(
+            {
+                "model": THINK_REGISTRY[k]["label"],
+                "verdict": v.get("verdict"),
+                "confidence": v.get("confidence"),
+                "duration_s": timings[k],
+            }
+        )
+
+    # Check if unanimous
+    unanimous = len(verdict_counts) == 1
+
+    summary_parts = []
+    if unanimous:
+        summary_parts.append(f"Les {n} modèles de synthèse sont unanimes : {winner}.")
+    else:
+        votes = ", ".join(
+            f"{vt} ({ct}x)" for vt, ct in sorted(verdict_counts.items(), key=lambda x: -x[1])
+        )
+        summary_parts.append(f"Vote des {n} thinkers : {votes}. Verdict majoritaire : {winner}.")
+
+    # Pick best summary from the verdicts that match the winner
+    for v in verdicts.values():
+        if v.get("verdict") == winner and v.get("summary"):
+            summary_parts.append(v["summary"])
+            break
 
     return {
         "claim": query,
-        "verdict": "UNVERIFIABLE",
-        "confidence": 0.0,
-        "summary": "Le thinking model n'a pas retourné de JSON valide.",
-        "raw_response": content[:2000],
+        "verdict": winner,
+        "confidence": round(avg_conf, 2),
+        "summary": " ".join(summary_parts),
+        "evidence_for": _dedup(all_evidence_for),
+        "evidence_against": _dedup(all_evidence_against),
+        "consensus": [],
+        "disagreements": [],
+        "blind_spots": [],
+        "nuances": _dedup(all_nuances),
+        "think_detail": think_detail,
     }
 
 
@@ -605,6 +796,7 @@ def factcheck(
     search_depth: str = "deep",
     skip_screening: bool = False,
     specialized: bool = False,
+    think: int = 1,
 ) -> dict:
     query = normalize_query(query)
     if agents is None:
@@ -697,9 +889,12 @@ def factcheck(
     successful = sum(1 for r in agent_results.values() if not r["error"])
     console.print(f"\n[green]{successful}/{len(agents)} agents terminés avec succès[/green]")
 
-    # Phase 3 — Synthèse
+    # Phase 3 — Synthèse (1 ou N thinking models)
     t_synthesis = time.perf_counter()
-    verdict = synthesize_verdict(query, agent_results, synthesis_model)
+    if think > 1 and think in THINK_PRESETS:
+        verdict = synthesize_multi(query, agent_results, THINK_PRESETS[think])
+    else:
+        verdict = synthesize_verdict(query, agent_results, synthesis_model)
     synthesis_duration = time.perf_counter() - t_synthesis
 
     total_duration = time.perf_counter() - t_total
@@ -1175,6 +1370,13 @@ def main():
         help="Assign specialized roles to agents (verificateur, avocat du diable, analyste sources, contextualiste)",
     )
     parser.add_argument(
+        "--think",
+        type=int,
+        default=1,
+        choices=[1, 2, 3, 5],
+        help="Number of thinking models for synthesis (1=default, 2/3/5=multi-think parallel vote)",
+    )
+    parser.add_argument(
         "--no-screen",
         action="store_true",
         help="Skip pre-screening (force full pipeline even for non-factual claims)",
@@ -1225,6 +1427,7 @@ def main():
         search_depth=config["search_depth"],
         skip_screening=args.no_screen,
         specialized=args.specialized,
+        think=args.think,
     )
 
     display_verdict(output)
