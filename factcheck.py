@@ -548,12 +548,45 @@ def display_verdict(output: dict) -> None:
         for n in v["nuances"]:
             console.print(f"  • {n}")
 
+    # Timeline waterfall
     t = output["timing"]
+    total = t["total_s"] or 1
+    bar_width = 60
+
+    phases = [
+        ("Linkup", t["search_s"], "blue"),
+        ("Agents", t["analysis_s"], "cyan"),
+        ("Synthèse", t["synthesis_s"], "magenta"),
+    ]
+
+    console.print("\n[bold]Pipeline Timeline[/bold]")
+    for label, dur, color in phases:
+        pct = dur / total
+        filled = max(1, round(pct * bar_width))
+        bar = "█" * filled + "░" * (bar_width - filled)
+        console.print(
+            f"  [{color}]{label:>8}[/{color}] [{color}]{bar}[/{color}] " f"{dur:.1f}s ({pct:.0%})"
+        )
+
+    # Per-agent detail inside the Agents phase
+    per_agent = t.get("per_agent", {})
+    if per_agent:
+        max_agent = max(per_agent.values()) or 1
+        console.print(
+            f"\n  [dim]Détail agents (parallèle, wall-clock = {t['analysis_s']:.1f}s) :[/dim]"
+        )
+        for name, dur in sorted(per_agent.items(), key=lambda x: x[1]):
+            label = AGENT_REGISTRY.get(name, {}).get("label", name)
+            agent_pct = dur / max_agent
+            filled = max(1, round(agent_pct * 40))
+            bar = "█" * filled + "░" * (40 - filled)
+            console.print(f"    {label:>20} [cyan]{bar}[/cyan] {dur:.1f}s")
+
     console.print(
         f"\n[dim]Total: {t['total_s']:.1f}s | "
-        f"Search: {t['search_s']:.1f}s | "
-        f"Analyse: {t['analysis_s']:.1f}s | "
-        f"Synthèse: {t['synthesis_s']:.1f}s[/dim]"
+        f"Linkup: {t['search_s']:.1f}s ({t['search_s']/total:.0%}) | "
+        f"Agents: {t['analysis_s']:.1f}s ({t['analysis_s']/total:.0%}) | "
+        f"Synthèse: {t['synthesis_s']:.1f}s ({t['synthesis_s']/total:.0%})[/dim]"
     )
 
 
@@ -591,6 +624,16 @@ HTML_TEMPLATE = """\
   .timing-card {{ background: #1e293b; padding: .8rem; border-radius: 8px; text-align: center; }}
   .timing-card .val {{ font-size: 1.4rem; font-weight: 700; color: #3b82f6; }}
   .timing-card .lbl {{ font-size: .75rem; color: #64748b; margin-top: .2rem; }}
+  .timeline {{ background: #1e293b; padding: 1.2rem; border-radius: 8px; margin-bottom: 1.5rem; }}
+  .timeline h2 {{ font-size: 1rem; margin-bottom: 1rem; color: #94a3b8; text-transform: uppercase; letter-spacing: .05em; }}
+  .tl-row {{ display: flex; align-items: center; margin-bottom: .6rem; gap: .8rem; }}
+  .tl-label {{ width: 80px; text-align: right; font-weight: 600; font-size: .85rem; flex-shrink: 0; }}
+  .tl-track {{ flex: 1; background: #0f172a; border-radius: 4px; height: 28px; position: relative; overflow: hidden; }}
+  .tl-bar {{ height: 100%; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: .75rem; font-weight: 600; color: white; min-width: 40px; }}
+  .tl-bar.linkup {{ background: linear-gradient(90deg, #3b82f6, #2563eb); }}
+  .tl-bar.agents {{ background: linear-gradient(90deg, #06b6d4, #0891b2); }}
+  .tl-bar.synthesis {{ background: linear-gradient(90deg, #a855f7, #7c3aed); }}
+  .tl-meta {{ width: 90px; text-align: right; font-size: .8rem; color: #94a3b8; font-variant-numeric: tabular-nums; flex-shrink: 0; }}
   .agents {{ margin-top: 1.5rem; }}
   .agent-row {{ display: flex; justify-content: space-between; align-items: center; padding: .5rem .8rem; border-radius: 6px; margin-bottom: .4rem; background: #0f172a; }}
   .agent-name {{ font-weight: 600; }}
@@ -613,6 +656,25 @@ HTML_TEMPLATE = """\
 {evidence_against_html}
 {nuances_html}
 
+<div class="timeline">
+  <h2>Pipeline Timeline</h2>
+  <div class="tl-row">
+    <div class="tl-label" style="color:#3b82f6">Linkup</div>
+    <div class="tl-track"><div class="tl-bar linkup" style="width:{search_pct}%">{search_s}s</div></div>
+    <div class="tl-meta">{search_pct}%</div>
+  </div>
+  <div class="tl-row">
+    <div class="tl-label" style="color:#06b6d4">Agents</div>
+    <div class="tl-track"><div class="tl-bar agents" style="width:{analysis_pct}%">{analysis_s}s</div></div>
+    <div class="tl-meta">{analysis_pct}%</div>
+  </div>
+  <div class="tl-row">
+    <div class="tl-label" style="color:#a855f7">Synthèse</div>
+    <div class="tl-track"><div class="tl-bar synthesis" style="width:{synthesis_pct}%">{synthesis_s}s</div></div>
+    <div class="tl-meta">{synthesis_pct}%</div>
+  </div>
+</div>
+
 <div class="section agents">
   <h2>Agents — Parallélisme</h2>
   {agents_html}
@@ -620,8 +682,8 @@ HTML_TEMPLATE = """\
 
 <div class="timing">
   <div class="timing-card"><div class="val">{total_s}s</div><div class="lbl">Total</div></div>
-  <div class="timing-card"><div class="val">{search_s}s</div><div class="lbl">Recherche</div></div>
-  <div class="timing-card"><div class="val">{analysis_s}s</div><div class="lbl">Analyse</div></div>
+  <div class="timing-card"><div class="val">{search_s}s</div><div class="lbl">Linkup</div></div>
+  <div class="timing-card"><div class="val">{analysis_s}s</div><div class="lbl">Agents</div></div>
   <div class="timing-card"><div class="val">{synthesis_s}s</div><div class="lbl">Synthèse</div></div>
 </div>
 
@@ -669,6 +731,11 @@ def generate_html_report(output: dict, path: str) -> str:
     def _esc(s: str) -> str:
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
+    total = t["total_s"] or 1
+    search_pct = round(t["search_s"] / total * 100)
+    analysis_pct = round(t["analysis_s"] / total * 100)
+    synthesis_pct = round(t["synthesis_s"] / total * 100)
+
     html = HTML_TEMPLATE.format(
         query_escaped=_esc(output["query"]),
         verdict_text=verdict_text,
@@ -685,6 +752,9 @@ def generate_html_report(output: dict, path: str) -> str:
         search_s=f"{t['search_s']:.1f}",
         analysis_s=f"{t['analysis_s']:.1f}",
         synthesis_s=f"{t['synthesis_s']:.1f}",
+        search_pct=search_pct,
+        analysis_pct=analysis_pct,
+        synthesis_pct=synthesis_pct,
         timestamp=output.get("timestamp", ""),
     )
 
