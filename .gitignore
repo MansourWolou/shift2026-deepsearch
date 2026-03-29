@@ -1,5 +1,6 @@
 .env
 .mcp.json
+reports/
 report*.html
 __pycache__/
 *.pyc

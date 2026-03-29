@@ -762,6 +762,112 @@ def generate_html_report(output: dict, path: str) -> str:
     return path
 
 
+REPORTS_DIR = Path("reports")
+
+INDEX_TEMPLATE = """\
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fact-Check — Index des rapports</title>
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{ font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; padding: 2rem; max-width: 960px; margin: auto; }}
+  h1 {{ font-size: 1.6rem; margin-bottom: 1.5rem; }}
+  .count {{ color: #64748b; font-size: .9rem; margin-bottom: 1.5rem; }}
+  .report {{ background: #1e293b; padding: 1rem 1.2rem; border-radius: 8px; margin-bottom: .6rem; display: flex; justify-content: space-between; align-items: center; text-decoration: none; color: inherit; transition: background .15s; }}
+  .report:hover {{ background: #334155; }}
+  .report-left {{ flex: 1; }}
+  .report-claim {{ font-weight: 600; font-size: 1rem; margin-bottom: .3rem; }}
+  .report-meta {{ font-size: .8rem; color: #64748b; }}
+  .report-verdict {{ font-size: .9rem; font-weight: 700; padding: .3rem .7rem; border-radius: 6px; flex-shrink: 0; margin-left: 1rem; }}
+  .report-verdict.TRUE {{ background: #166534; color: #4ade80; }}
+  .report-verdict.FALSE {{ background: #7f1d1d; color: #f87171; }}
+  .report-verdict.PARTIALLY {{ background: #713f12; color: #facc15; }}
+  .report-verdict.MISLEADING {{ background: #7f1d1d; color: #f87171; }}
+  .report-verdict.UNVERIFIABLE {{ background: #374151; color: #9ca3af; }}
+  .report-verdict.UNKNOWN {{ background: #374151; color: #9ca3af; }}
+  .footer {{ text-align: center; color: #475569; font-size: .75rem; margin-top: 2rem; }}
+</style>
+</head>
+<body>
+<h1>Fact-Check Reports</h1>
+<div class="count">{count} rapport(s)</div>
+{entries}
+<div class="footer">Fact-Check Engine</div>
+</body>
+</html>
+"""
+
+
+def _generate_report_filename(output: dict) -> str:
+    """Generate a unique filename from timestamp + claim slug."""
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    claim = output.get("query", "report")
+    slug = re.sub(r"[^a-z0-9]+", "-", claim.lower().strip())[:50].strip("-")
+    return f"{ts}_{slug}.html"
+
+
+def _rebuild_index(reports_dir: Path) -> str:
+    """Scan reports dir and rebuild index.html."""
+    report_files = sorted(reports_dir.glob("*.html"), reverse=True)
+    report_files = [f for f in report_files if f.name != "index.html"]
+
+    entries = []
+    for f in report_files:
+        content = f.read_text(encoding="utf-8")
+
+        # Extract claim from <div class="claim">...</div>
+        claim_match = re.search(r'<div class="claim">(.*?)</div>', content, re.DOTALL)
+        claim = claim_match.group(1).strip() if claim_match else f.stem
+
+        # Extract verdict from <div class="verdict ...">...</div>
+        verdict_match = re.search(r'<div class="verdict[^"]*">([^<]+)</div>', content)
+        verdict = verdict_match.group(1).strip() if verdict_match else "UNKNOWN"
+        verdict_class = verdict.split()[0]
+
+        # Extract confidence
+        conf_match = re.search(r"Confiance\s*:\s*(\d+)%", content)
+        conf = conf_match.group(1) + "%" if conf_match else ""
+
+        # Extract timestamp from footer
+        ts_match = re.search(r"Généré le ([^ ]+)", content)
+        ts_display = ts_match.group(1)[:19].replace("T", " ") if ts_match else f.stem[:15]
+
+        entries.append(
+            f'<a class="report" href="{f.name}">'
+            f'<div class="report-left">'
+            f'<div class="report-claim">{claim}</div>'
+            f'<div class="report-meta">{ts_display} — {conf}</div>'
+            f"</div>"
+            f'<div class="report-verdict {verdict_class}">{verdict}</div>'
+            f"</a>"
+        )
+
+    index_html = INDEX_TEMPLATE.format(
+        count=len(report_files),
+        entries="\n".join(entries),
+    )
+
+    index_path = reports_dir / "index.html"
+    index_path.write_text(index_html, encoding="utf-8")
+    return str(index_path)
+
+
+def generate_report_with_index(output: dict, reports_dir: Path | None = None) -> tuple[str, str]:
+    """Generate a unique report + rebuild the index. Returns (report_path, index_path)."""
+    if reports_dir is None:
+        reports_dir = REPORTS_DIR
+    reports_dir.mkdir(exist_ok=True)
+
+    filename = _generate_report_filename(output)
+    report_path = reports_dir / filename
+    generate_html_report(output, str(report_path))
+    index_path = _rebuild_index(reports_dir)
+    return str(report_path), index_path
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────────────────────────────────────
@@ -825,8 +931,8 @@ def main():
     parser.add_argument(
         "--html",
         nargs="?",
-        const="report.html",
-        help="Generate HTML report (dev/demo). Optional path, default: report.html",
+        const="reports",
+        help="Generate HTML report in dir (default: reports/). Auto-names files, rebuilds index.",
     )
     parser.add_argument(
         "--verbose", action="store_true", help="Include raw search & analysis in output"
@@ -878,8 +984,9 @@ def main():
         console.print(f"\n[dim]JSON sauvegardé → {args.output}[/dim]")
 
     if args.html:
-        html_path = generate_html_report(output, args.html)
-        console.print(f"\n[dim]Rapport HTML → {html_path}[/dim]")
+        report_path, index_path = generate_report_with_index(output, Path(args.html))
+        console.print(f"\n[dim]Rapport HTML → {report_path}[/dim]")
+        console.print(f"[dim]Index        → {index_path}[/dim]")
 
 
 if __name__ == "__main__":
