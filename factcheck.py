@@ -175,8 +175,91 @@ Analyse ces résultats et fournis :
 
 Réponds en markdown structuré avec les sources citées."""
 
+# Prompts spécialisés — chaque agent a un angle d'analyse différent
+SPECIALIZED_PROMPTS: dict[str, str] = {
+    "verificateur": """Tu es un VÉRIFICATEUR DE FAITS rigoureux. Tu te concentres UNIQUEMENT
+sur les données factuelles : dates, chiffres, noms, lieux, statistiques.
 
-def _invoke_agent(model: str, claim: str, search_results: dict) -> str:
+AFFIRMATION : {claim}
+
+RÉSULTATS DE RECHERCHE :
+{search_answer}
+
+SOURCES :
+{sources_text}
+
+Ta mission :
+1. Extraire chaque fait vérifiable de l'affirmation (dates, chiffres, noms, etc.)
+2. Pour chaque fait, indiquer si les sources le confirment ou l'infirment, avec citation
+3. Signaler toute donnée factuelle absente des sources (ni confirmée, ni infirmée)
+4. Verdict factuel : vrai, faux, partiellement vrai, invérifiable
+
+Sois précis et factuel. Pas d'interprétation, pas d'opinion.""",
+    "avocat_diable": """Tu es un AVOCAT DU DIABLE. Ton rôle est de chercher activement
+à INFIRMER l'affirmation. Tu dois trouver les failles, les contre-exemples, les biais.
+
+AFFIRMATION : {claim}
+
+RÉSULTATS DE RECHERCHE :
+{search_answer}
+
+SOURCES :
+{sources_text}
+
+Ta mission :
+1. Chercher dans les sources tout ce qui contredit ou nuance l'affirmation
+2. Identifier les biais possibles des sources (parti pris, date ancienne, source partiale)
+3. Proposer des interprétations alternatives ou des contre-arguments
+4. Signaler ce que l'affirmation omet ou simplifie
+5. Ton évaluation en partant du principe que l'affirmation est fausse — qu'est-ce qui manque pour la confirmer ?
+
+Sois critique et exigeant. Ton job est de challenger, pas de confirmer.""",
+    "analyste_sources": """Tu es un ANALYSTE DE SOURCES spécialisé en fiabilité de l'information.
+Tu évalues la QUALITÉ des preuves, pas leur contenu.
+
+AFFIRMATION : {claim}
+
+RÉSULTATS DE RECHERCHE :
+{search_answer}
+
+SOURCES :
+{sources_text}
+
+Ta mission :
+1. Classer chaque source par type : institutionnelle, académique, presse, blog, opinion, wiki
+2. Évaluer la fiabilité de chaque source (date, auteur, biais connu, réputation)
+3. Identifier les sources primaires vs secondaires vs tertiaires
+4. Détecter les circular reporting (sources qui se citent mutuellement)
+5. Donner un score de confiance global basé sur la QUALITÉ des sources, pas leur quantité
+
+Sois méthodique. Un fait cité par 10 blogs vaut moins qu'un fait cité par 1 source primaire.""",
+    "contextualiste": """Tu es un CONTEXTUALISTE expert. Tu apportes le contexte historique,
+géographique, politique et temporel que les autres analyses pourraient manquer.
+
+AFFIRMATION : {claim}
+
+RÉSULTATS DE RECHERCHE :
+{search_answer}
+
+SOURCES :
+{sources_text}
+
+Ta mission :
+1. Replacer l'affirmation dans son contexte historique et temporel
+2. Identifier si l'affirmation était vraie à une époque mais plus maintenant (ou l'inverse)
+3. Signaler les nuances géographiques ou culturelles
+4. Détecter les simplifications abusives ou les généralisations
+5. Identifier les "blind spots" — ce que personne ne mentionne mais qui est important
+
+Apporte la profondeur et la nuance. Les faits bruts ne suffisent pas, le contexte change tout.""",
+}
+
+# Mapping : quel agent reçoit quel rôle spécialisé (en mode --specialized)
+# Les agents sont assignés dans l'ordre de la liste fournie
+SPECIALIZED_ROLES = ["verificateur", "avocat_diable", "analyste_sources", "contextualiste"]
+
+
+def _invoke_agent(model: str, claim: str, search_results: dict, prompt: str | None = None) -> str:
     """Un LLM analyse les résultats de recherche Linkup."""
     llm = ChatOpenAI(
         model=model,
@@ -190,9 +273,10 @@ def _invoke_agent(model: str, claim: str, search_results: dict) -> str:
         for s in search_results.get("sources", [])
     )
 
+    template = prompt or ANALYSIS_PROMPT
     messages = [
         HumanMessage(
-            content=ANALYSIS_PROMPT.format(
+            content=template.format(
                 claim=claim,
                 search_answer=search_results.get("answer", "Aucune réponse"),
                 sources_text=sources_text or "Aucune source",
@@ -288,25 +372,46 @@ def run_research_parallel(
     search_results: dict,
     agents: list[str],
     max_workers: int | None = None,
+    specialized: bool = False,
 ) -> dict[str, dict]:
     """
     Lance N agents LLM en parallèle, chacun analysant les mêmes résultats Linkup.
+    Si specialized=True, chaque agent reçoit un prompt spécialisé différent.
     """
     if max_workers is None:
         max_workers = len(agents)
 
+    # Assign roles: cycle through specialized roles if more agents than roles
+    agent_prompts: dict[str, str | None] = {}
+    agent_roles: dict[str, str] = {}
+    if specialized:
+        for i, name in enumerate(agents):
+            role = SPECIALIZED_ROLES[i % len(SPECIALIZED_ROLES)]
+            agent_prompts[name] = SPECIALIZED_PROMPTS[role]
+            agent_roles[name] = role
+        log.info("Specialized mode — roles: %s", agent_roles)
+    else:
+        for name in agents:
+            agent_prompts[name] = None
+            agent_roles[name] = "generic"
+
     log.info("Parallelism: %d agents, %d workers", len(agents), max_workers)
     for a in agents:
-        log.debug("  → %s (%s)", AGENT_REGISTRY[a]["label"], AGENT_REGISTRY[a]["model"])
+        log.debug(
+            "  → %s (%s) [%s]",
+            AGENT_REGISTRY[a]["label"],
+            AGENT_REGISTRY[a]["model"],
+            agent_roles[a],
+        )
 
     results: dict[str, dict] = {}
 
     def _run_one(agent_name: str) -> tuple[str, str, float, str | None]:
         t0 = time.perf_counter()
-        log.debug("[%s] started", agent_name)
+        log.debug("[%s] started (%s)", agent_name, agent_roles[agent_name])
         try:
             model = AGENT_REGISTRY[agent_name]["model"]
-            raw = _invoke_agent(model, claim, search_results)
+            raw = _invoke_agent(model, claim, search_results, prompt=agent_prompts[agent_name])
             dt = time.perf_counter() - t0
             log.info("[%s] done in %.1fs (%d chars)", agent_name, dt, len(raw))
             return (agent_name, raw, dt, None)
@@ -318,14 +423,21 @@ def run_research_parallel(
     status_map: dict[str, str] = {name: "[yellow]en cours…[/yellow]" for name in agents}
 
     def _build_table() -> Table:
-        table = Table(title="Analyse en cours", show_header=True, header_style="bold cyan")
+        title = "Analyse en cours (spécialisée)" if specialized else "Analyse en cours"
+        table = Table(title=title, show_header=True, header_style="bold cyan")
         table.add_column("Agent", style="bold")
+        if specialized:
+            table.add_column("Rôle", style="dim")
         table.add_column("Statut")
         table.add_column("Durée", justify="right")
         for name in agents:
             duration = results[name]["duration_s"] if name in results else ""
             dur_str = f"{duration:.1f}s" if duration else "…"
-            table.add_row(AGENT_REGISTRY[name]["label"], status_map[name], dur_str)
+            row = [AGENT_REGISTRY[name]["label"]]
+            if specialized:
+                row.append(agent_roles[name])
+            row.extend([status_map[name], dur_str])
+            table.add_row(*row)
         return table
 
     with (
@@ -337,6 +449,7 @@ def run_research_parallel(
             name, raw, duration, error = future.result()
             results[name] = {
                 "label": AGENT_REGISTRY[name]["label"],
+                "role": agent_roles[name],
                 "raw": raw,
                 "duration_s": round(duration, 2),
                 "error": error,
@@ -409,16 +522,20 @@ def synthesize_verdict(
 ) -> dict:
     reports = []
     for name, data in research_results.items():
+        role = data.get("role", "generic")
+        role_tag = f" [role: {role}]" if role != "generic" else ""
         if data["error"]:
             reports.append(
-                f"--- REPORT FROM {data['label']} ({name}) ---\n"
+                f"--- REPORT FROM {data['label']} ({name}){role_tag} ---\n"
                 f"[FAILED: {data['error']}]\n"
                 f"--- END REPORT ---"
             )
         else:
             text = clean_text(data["raw"])[:4000]
             reports.append(
-                f"--- REPORT FROM {data['label']} ({name}) ---\n" f"{text}\n" f"--- END REPORT ---"
+                f"--- REPORT FROM {data['label']} ({name}){role_tag} ---\n"
+                f"{text}\n"
+                f"--- END REPORT ---"
             )
 
     agent_reports = "\n\n".join(reports)
@@ -487,6 +604,7 @@ def factcheck(
     max_workers: int | None = None,
     search_depth: str = "deep",
     skip_screening: bool = False,
+    specialized: bool = False,
 ) -> dict:
     query = normalize_query(query)
     if agents is None:
@@ -571,7 +689,9 @@ def factcheck(
 
     # Phase 2 — Analyse parallèle par N modèles
     t_analysis = time.perf_counter()
-    agent_results = run_research_parallel(query, search_results, agents, max_workers=max_workers)
+    agent_results = run_research_parallel(
+        query, search_results, agents, max_workers=max_workers, specialized=specialized
+    )
     analysis_duration = time.perf_counter() - t_analysis
 
     successful = sum(1 for r in agent_results.values() if not r["error"])
@@ -1050,6 +1170,11 @@ def main():
     )
     parser.add_argument("--no-pretty", action="store_true", help="Compact JSON output")
     parser.add_argument(
+        "--specialized",
+        action="store_true",
+        help="Assign specialized roles to agents (verificateur, avocat du diable, analyste sources, contextualiste)",
+    )
+    parser.add_argument(
         "--no-screen",
         action="store_true",
         help="Skip pre-screening (force full pipeline even for non-factual claims)",
@@ -1060,10 +1185,19 @@ def main():
         choices=["debug", "info", "warning", "error"],
         help="Log level — use 'debug' or 'info' for parallelism details",
     )
+    parser.add_argument(
+        "--test-all",
+        action="store_true",
+        help="Run a full test suite: pre-screening, all modes, specialized vs generic, HTML reports",
+    )
 
     args = parser.parse_args()
 
     _setup_logging(args.log_level)
+
+    if args.test_all:
+        _run_test_all(args)
+        return
 
     query = (
         " ".join(args.claim).strip() if args.claim else input("Entrez l'info à vérifier : ").strip()
@@ -1090,6 +1224,7 @@ def main():
         max_workers=config["max_workers"],
         search_depth=config["search_depth"],
         skip_screening=args.no_screen,
+        specialized=args.specialized,
     )
 
     display_verdict(output)
@@ -1104,6 +1239,171 @@ def main():
         report_path, index_path = generate_report_with_index(output, Path(args.html))
         console.print(f"\n[dim]Rapport HTML → {report_path}[/dim]")
         console.print(f"[dim]Index        → {index_path}[/dim]")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Test-all — tests toutes les combinaisons
+# ──────────────────────────────────────────────────────────────────────────────
+
+TEST_CLAIMS = [
+    # Factual — should pass screening and get a clear verdict
+    ("La tour Eiffel mesure 330 metres", "factual"),
+    # False — should be caught as FALSE
+    ("La capitale de l'Australie est Sydney", "factual-false"),
+    # Idiom — should be caught by pre-screening
+    ("Le verre est a moitie plein", "idiom"),
+    # Opinion — should be caught by pre-screening
+    ("Python est le meilleur langage de programmation", "opinion"),
+]
+
+
+def _run_test_all(_args: argparse.Namespace) -> None:
+    reports_dir = Path("reports")
+
+    console.print(
+        Panel(
+            "[bold]Test complet — toutes les combinaisons[/bold]\n"
+            f"[dim]{len(TEST_CLAIMS)} claims x (screening + modes + specialized)[/dim]",
+            border_style="magenta",
+        )
+    )
+
+    results_summary = []
+    t_global = time.perf_counter()
+
+    # 1. Pre-screening tests
+    console.print("\n[bold magenta]═══ Phase 1 : Pre-screening ═══[/bold magenta]\n")
+    for claim, _expected_type in TEST_CLAIMS:
+        console.print(f"[bold]→ {claim}[/bold]")
+        t0 = time.perf_counter()
+        screening = prescreen_claim(claim)
+        dt = time.perf_counter() - t0
+        checkable = screening.get("checkable", True)
+        category = screening.get("category", "?")
+        icon = "✓" if checkable else "✗"
+        color = "green" if checkable else "yellow"
+        console.print(
+            f"  [{color}]{icon} {category}[/{color}] — "
+            f"{screening.get('reason', '')} ({dt:.1f}s)\n"
+        )
+        results_summary.append(
+            {
+                "claim": claim,
+                "test": "screening",
+                "result": category,
+                "checkable": checkable,
+                "time_s": round(dt, 1),
+            }
+        )
+
+    # 2. Mode fast (generic) — only factual claims
+    console.print("\n[bold magenta]═══ Phase 2 : Mode fast (generic) ═══[/bold magenta]\n")
+    for claim, expected_type in TEST_CLAIMS:
+        if expected_type.startswith("factual"):
+            console.print(f"[bold]→ {claim}[/bold]")
+            output = factcheck(
+                query=claim,
+                agents=MODE_PRESETS["fast"]["agents"],
+                max_workers=MODE_PRESETS["fast"]["max_workers"],
+                search_depth=MODE_PRESETS["fast"]["search_depth"],
+                skip_screening=True,
+            )
+            display_verdict(output)
+            report_path, _ = generate_report_with_index(output, reports_dir)
+            console.print(f"[dim]→ {report_path}[/dim]\n")
+            results_summary.append(
+                {
+                    "claim": claim,
+                    "test": "fast-generic",
+                    "verdict": output["verdict"].get("verdict"),
+                    "confidence": output["verdict"].get("confidence"),
+                    "time_s": output["timing"]["total_s"],
+                }
+            )
+
+    # 3. Mode thorough (generic) — factual claims only
+    console.print("\n[bold magenta]═══ Phase 3 : Mode thorough (generic) ═══[/bold magenta]\n")
+    for claim, expected_type in TEST_CLAIMS:
+        if expected_type.startswith("factual"):
+            console.print(f"[bold]→ {claim}[/bold]")
+            output = factcheck(
+                query=claim,
+                agents=MODE_PRESETS["thorough"]["agents"],
+                search_depth=MODE_PRESETS["thorough"]["search_depth"],
+                skip_screening=True,
+            )
+            display_verdict(output)
+            report_path, _ = generate_report_with_index(output, reports_dir)
+            console.print(f"[dim]→ {report_path}[/dim]\n")
+            results_summary.append(
+                {
+                    "claim": claim,
+                    "test": "thorough-generic",
+                    "verdict": output["verdict"].get("verdict"),
+                    "confidence": output["verdict"].get("confidence"),
+                    "time_s": output["timing"]["total_s"],
+                }
+            )
+
+    # 4. Mode thorough (specialized) — factual claims only
+    console.print("\n[bold magenta]═══ Phase 4 : Mode thorough (spécialisé) ═══[/bold magenta]\n")
+    for claim, expected_type in TEST_CLAIMS:
+        if expected_type.startswith("factual"):
+            console.print(f"[bold]→ {claim}[/bold]")
+            output = factcheck(
+                query=claim,
+                agents=MODE_PRESETS["thorough"]["agents"],
+                search_depth=MODE_PRESETS["thorough"]["search_depth"],
+                skip_screening=True,
+                specialized=True,
+            )
+            display_verdict(output)
+            report_path, _ = generate_report_with_index(output, reports_dir)
+            console.print(f"[dim]→ {report_path}[/dim]\n")
+            results_summary.append(
+                {
+                    "claim": claim,
+                    "test": "thorough-specialized",
+                    "verdict": output["verdict"].get("verdict"),
+                    "confidence": output["verdict"].get("confidence"),
+                    "time_s": output["timing"]["total_s"],
+                }
+            )
+
+    # Summary table
+    total_time = time.perf_counter() - t_global
+
+    console.print("\n[bold magenta]═══ Résumé ═══[/bold magenta]\n")
+    summary_table = Table(show_header=True, header_style="bold cyan")
+    summary_table.add_column("Claim", max_width=40)
+    summary_table.add_column("Test")
+    summary_table.add_column("Résultat")
+    summary_table.add_column("Confiance")
+    summary_table.add_column("Temps", justify="right")
+
+    for r in results_summary:
+        verdict = r.get("verdict", r.get("result", ""))
+        conf = r.get("confidence")
+        conf_str = f"{conf:.0%}" if isinstance(conf, int | float) and conf else ""
+        color = VERDICT_COLORS.get(str(verdict), "white")
+        summary_table.add_row(
+            r["claim"][:40],
+            r["test"],
+            f"[{color}]{verdict}[/{color}]",
+            conf_str,
+            f"{r['time_s']:.1f}s",
+        )
+
+    console.print(summary_table)
+    console.print(f"\n[bold]Temps total : {total_time:.1f}s[/bold]")
+    console.print("[dim]Tous les rapports HTML → reports/index.html[/dim]")
+
+    # Save summary JSON
+    summary_path = reports_dir / "test-all-summary.json"
+    summary_path.write_text(
+        json.dumps(results_summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    console.print(f"[dim]Résumé JSON → {summary_path}[/dim]")
 
 
 if __name__ == "__main__":
